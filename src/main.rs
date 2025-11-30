@@ -23,19 +23,19 @@
 //!
 //! ```bash
 //! # List configured servers
-//! mcp-cli list-servers
+//! mcp-tap list-servers
 //!
 //! # List tools from a server
-//! mcp-cli --server playwright list-tools
+//! mcp-tap --server playwright list-tools
 //!
 //! # Call a tool
-//! mcp-cli --server playwright call browser_navigate --args '{"url":"https://example.com"}'
+//! mcp-tap --server playwright call browser_navigate --args '{"url":"https://example.com"}'
 //!
 //! # Daemon mode (for servers that support it)
-//! mcp-cli --server playwright start-daemon --server-args '["--gui"]'
-//! mcp-cli --server playwright call browser_navigate --args '{"url":"https://example.com"}'  # Uses daemon
-//! mcp-cli --server playwright daemon-status
-//! mcp-cli --server playwright stop-daemon
+//! mcp-tap --server playwright start-daemon --server-args '["--gui"]'
+//! mcp-tap --server playwright call browser_navigate --args '{"url":"https://example.com"}'  # Uses daemon
+//! mcp-tap --server playwright daemon-status
+//! mcp-tap --server playwright stop-daemon
 //! ```
 //!
 //! ## Configuration
@@ -142,7 +142,7 @@ fn load_server_config() -> Result<ServerConfig> {
 // ============================================================================
 
 #[derive(Parser)]
-#[command(name = "mcp-cli")]
+#[command(name = "mcp-tap")]
 #[command(about = "Unified MCP CLI - Generic MCP Protocol Client")]
 #[command(version = "1.0.0")]
 struct Cli {
@@ -295,7 +295,7 @@ impl McpClient {
                 "protocolVersion": "2025-06-18",
                 "capabilities": {},
                 "clientInfo": {
-                    "name": "mcp-cli",
+                    "name": "mcp-tap",
                     "version": "1.0.0"
                 }
             }

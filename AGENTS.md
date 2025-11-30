@@ -1,4 +1,4 @@
-# mcp-cli
+# mcp-tap
 
 Unified MCP (Model Context Protocol) client for any MCP server.
 
@@ -16,7 +16,7 @@ Unified MCP (Model Context Protocol) client for any MCP server.
 
 ```bash
 # Get tool schema
-mcp-cli --server <name> list-tools 2>/dev/null | \
+mcp-tap --server <name> list-tools 2>/dev/null | \
   jq '.tools[] | select(.name=="<tool>") | {
     name,
     required: .inputSchema.required,
@@ -28,24 +28,24 @@ mcp-cli --server <name> list-tools 2>/dev/null | \
 
 ```bash
 # Direct JSON
-mcp-cli --server <name> call <tool> --args '{"key":"value"}'
+mcp-tap --server <name> call <tool> --args '{"key":"value"}'
 
 # From stdin (for complex JSON)
-echo '{"key":"value"}' | mcp-cli --server <name> call <tool> --args -
+echo '{"key":"value"}' | mcp-tap --server <name> call <tool> --args -
 ```
 
 ### 3. Daemon Mode (for repeated calls)
 
 ```bash
 # Start (creates .mcp-profile/<server>/ in CWD)
-mcp-cli --server <name> start-daemon
+mcp-tap --server <name> start-daemon
 
 # Calls auto-route through daemon
-mcp-cli --server <name> call <tool> --args '{...}'
+mcp-tap --server <name> call <tool> --args '{...}'
 
 # Check/stop
-mcp-cli --server <name> daemon-status
-mcp-cli --server <name> stop-daemon
+mcp-tap --server <name> daemon-status
+mcp-tap --server <name> stop-daemon
 ```
 
 ## When to Use Daemon vs STDIO
@@ -63,11 +63,11 @@ When you see validation errors like `'<field>' is a required property`:
 
 ```bash
 # Step 1: List required fields
-mcp-cli --server <name> list-tools 2>/dev/null | \
+mcp-tap --server <name> list-tools 2>/dev/null | \
   jq '.tools[] | select(.name=="<tool>") | .inputSchema.required[]'
 
 # Step 2: Get property types
-mcp-cli --server <name> list-tools 2>/dev/null | \
+mcp-tap --server <name> list-tools 2>/dev/null | \
   jq '.tools[] | select(.name=="<tool>") | .inputSchema.properties'
 ```
 
@@ -108,19 +108,19 @@ Location: `~/.claude/scripts/mcp-servers.json`
 
 ```bash
 # List servers
-mcp-cli list-servers
+mcp-tap list-servers
 
 # List tools (always do this first)
-mcp-cli --server <name> list-tools
+mcp-tap --server <name> list-tools
 
 # Call tool
-mcp-cli --server <name> call <tool> --args '{"key":"value"}'
+mcp-tap --server <name> call <tool> --args '{"key":"value"}'
 
 # Override default args (empty array clears defaults)
-mcp-cli --server <name> --server-args '[]' call <tool> --args '{}'
+mcp-tap --server <name> --server-args '[]' call <tool> --args '{}'
 
 # Interactive shell
-mcp-cli --server <name> shell
+mcp-tap --server <name> shell
 ```
 
 ## Publishing to crates.io
@@ -130,11 +130,11 @@ mcp-cli --server <name> shell
 1. **Cargo.toml metadata**:
    ```toml
    [package]
-   name = "mcp-cli"
+   name = "mcp-tap"
    version = "1.0.0"
    edition = "2021"
    license = "MIT"
-   repository = "https://github.com/<user>/mcp-cli"
+   repository = "https://github.com/yonaka15/mcp-tap"
    keywords = ["mcp", "cli", "model-context-protocol"]
    categories = ["command-line-utilities", "development-tools"]
    ```

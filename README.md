@@ -1,4 +1,4 @@
-# mcp-cli
+# mcp-tap
 
 A unified MCP (Model Context Protocol) client that works with any MCP server through configurable profiles.
 
@@ -13,30 +13,31 @@ A unified MCP (Model Context Protocol) client that works with any MCP server thr
 ## Installation
 
 ```bash
+cargo install mcp-tap
+# Or build from source:
 cargo build --release
-# Binary available at ./target/release/mcp-cli
 ```
 
 ## Quick Start
 
 ```bash
 # List configured servers
-mcp-cli list-servers
+mcp-tap list-servers
 
 # List tools from a server
-mcp-cli --server playwright list-tools
+mcp-tap --server playwright list-tools
 
 # Call a tool
-mcp-cli --server playwright call browser_navigate --args '{"url":"https://example.com"}'
+mcp-tap --server playwright call browser_navigate --args '{"url":"https://example.com"}'
 
 # Read args from stdin
-echo '{"url":"https://example.com"}' | mcp-cli --server playwright call browser_navigate --args -
+echo '{"url":"https://example.com"}' | mcp-tap --server playwright call browser_navigate --args -
 
 # Daemon mode (persistent connection)
-mcp-cli --server playwright start-daemon --server-args '["--gui"]'
-mcp-cli --server playwright call browser_click --args '{"element":"Submit","ref":"e1"}'
-mcp-cli --server playwright daemon-status
-mcp-cli --server playwright stop-daemon
+mcp-tap --server playwright start-daemon --server-args '["--gui"]'
+mcp-tap --server playwright call browser_click --args '{"element":"Submit","ref":"e1"}'
+mcp-tap --server playwright daemon-status
+mcp-tap --server playwright stop-daemon
 ```
 
 ## Configuration
@@ -100,16 +101,16 @@ For servers that support it (`supports_daemon: true`), daemon mode keeps a persi
 
 ```bash
 # Start daemon (creates .mcp-profile/<server>/ in current directory)
-mcp-cli --server playwright start-daemon
+mcp-tap --server playwright start-daemon
 
 # Calls automatically route through daemon
-mcp-cli --server playwright call browser_navigate --args '{"url":"https://example.com"}'
+mcp-tap --server playwright call browser_navigate --args '{"url":"https://example.com"}'
 
 # Check status
-mcp-cli --server playwright daemon-status
+mcp-tap --server playwright daemon-status
 
 # Stop daemon
-mcp-cli --server playwright stop-daemon
+mcp-tap --server playwright stop-daemon
 ```
 
 **Directory matters**: Daemon state is stored in `.mcp-profile/` in the current working directory. Different directories = separate daemon instances.
