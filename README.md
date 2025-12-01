@@ -1,4 +1,4 @@
-# mcp-tap
+# mcp-valve
 
 A unified MCP (Model Context Protocol) client that works with any MCP server through configurable profiles.
 
@@ -13,7 +13,7 @@ A unified MCP (Model Context Protocol) client that works with any MCP server thr
 ## Installation
 
 ```bash
-cargo install mcp-tap
+cargo install mcp-valve
 # Or build from source:
 cargo build --release
 ```
@@ -22,27 +22,35 @@ cargo build --release
 
 ```bash
 # List configured servers
-mcp-tap list-servers
+mcp-valve list-servers
 
 # List tools from a server
-mcp-tap --server playwright list-tools
+mcp-valve --server playwright list-tools
 
 # Call a tool
-mcp-tap --server playwright call browser_navigate --args '{"url":"https://example.com"}'
+mcp-valve --server playwright call browser_navigate --args '{"url":"https://example.com"}'
 
 # Read args from stdin
-echo '{"url":"https://example.com"}' | mcp-tap --server playwright call browser_navigate --args -
+echo '{"url":"https://example.com"}' | mcp-valve --server playwright call browser_navigate --args -
 
 # Daemon mode (persistent connection)
-mcp-tap --server playwright start-daemon --server-args '["--gui"]'
-mcp-tap --server playwright call browser_click --args '{"element":"Submit","ref":"e1"}'
-mcp-tap --server playwright daemon-status
-mcp-tap --server playwright stop-daemon
+mcp-valve --server playwright start-daemon --server-args '["--gui"]'
+mcp-valve --server playwright call browser_click --args '{"element":"Submit","ref":"e1"}'
+mcp-valve --server playwright daemon-status
+mcp-valve --server playwright stop-daemon
 ```
 
 ## Configuration
 
-Server profiles are defined in `~/.claude/scripts/mcp-servers.json`:
+Config file is searched in the following order:
+
+1. `--config <path>` CLI flag
+2. `MCP_VALVE_CONFIG` environment variable
+3. `$XDG_CONFIG_HOME/mcp-valve/servers.json`
+4. `~/.config/mcp-valve/servers.json`
+5. `~/.claude/scripts/mcp-servers.json` (legacy)
+
+Example config:
 
 ```json
 {
@@ -101,16 +109,16 @@ For servers that support it (`supports_daemon: true`), daemon mode keeps a persi
 
 ```bash
 # Start daemon (creates .mcp-profile/<server>/ in current directory)
-mcp-tap --server playwright start-daemon
+mcp-valve --server playwright start-daemon
 
 # Calls automatically route through daemon
-mcp-tap --server playwright call browser_navigate --args '{"url":"https://example.com"}'
+mcp-valve --server playwright call browser_navigate --args '{"url":"https://example.com"}'
 
 # Check status
-mcp-tap --server playwright daemon-status
+mcp-valve --server playwright daemon-status
 
 # Stop daemon
-mcp-tap --server playwright stop-daemon
+mcp-valve --server playwright stop-daemon
 ```
 
 **Directory matters**: Daemon state is stored in `.mcp-profile/` in the current working directory. Different directories = separate daemon instances.

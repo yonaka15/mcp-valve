@@ -1,6 +1,8 @@
-# mcp-tap
+# mcp-valve
 
 Unified MCP (Model Context Protocol) client for any MCP server.
+
+**Install:** `cargo install mcp-valve`
 
 ## Critical Guardrails
 
@@ -16,7 +18,7 @@ Unified MCP (Model Context Protocol) client for any MCP server.
 
 ```bash
 # Get tool schema
-mcp-tap --server <name> list-tools 2>/dev/null | \
+mcp-valve --server <name> list-tools 2>/dev/null | \
   jq '.tools[] | select(.name=="<tool>") | {
     name,
     required: .inputSchema.required,
@@ -28,24 +30,24 @@ mcp-tap --server <name> list-tools 2>/dev/null | \
 
 ```bash
 # Direct JSON
-mcp-tap --server <name> call <tool> --args '{"key":"value"}'
+mcp-valve --server <name> call <tool> --args '{"key":"value"}'
 
 # From stdin (for complex JSON)
-echo '{"key":"value"}' | mcp-tap --server <name> call <tool> --args -
+echo '{"key":"value"}' | mcp-valve --server <name> call <tool> --args -
 ```
 
 ### 3. Daemon Mode (for repeated calls)
 
 ```bash
 # Start (creates .mcp-profile/<server>/ in CWD)
-mcp-tap --server <name> start-daemon
+mcp-valve --server <name> start-daemon
 
 # Calls auto-route through daemon
-mcp-tap --server <name> call <tool> --args '{...}'
+mcp-valve --server <name> call <tool> --args '{...}'
 
 # Check/stop
-mcp-tap --server <name> daemon-status
-mcp-tap --server <name> stop-daemon
+mcp-valve --server <name> daemon-status
+mcp-valve --server <name> stop-daemon
 ```
 
 ## When to Use Daemon vs STDIO
@@ -63,11 +65,11 @@ When you see validation errors like `'<field>' is a required property`:
 
 ```bash
 # Step 1: List required fields
-mcp-tap --server <name> list-tools 2>/dev/null | \
+mcp-valve --server <name> list-tools 2>/dev/null | \
   jq '.tools[] | select(.name=="<tool>") | .inputSchema.required[]'
 
 # Step 2: Get property types
-mcp-tap --server <name> list-tools 2>/dev/null | \
+mcp-valve --server <name> list-tools 2>/dev/null | \
   jq '.tools[] | select(.name=="<tool>") | .inputSchema.properties'
 ```
 
@@ -82,7 +84,12 @@ mcp-tap --server <name> list-tools 2>/dev/null | \
 
 ## Configuration
 
-Location: `~/.claude/scripts/mcp-servers.json`
+Config file search order:
+1. `--config <path>` CLI flag
+2. `MCP_VALVE_CONFIG` environment variable
+3. `$XDG_CONFIG_HOME/mcp-valve/servers.json`
+4. `~/.config/mcp-valve/servers.json`
+5. `~/.claude/scripts/mcp-servers.json` (legacy)
 
 ```json
 {
@@ -108,19 +115,19 @@ Location: `~/.claude/scripts/mcp-servers.json`
 
 ```bash
 # List servers
-mcp-tap list-servers
+mcp-valve list-servers
 
 # List tools (always do this first)
-mcp-tap --server <name> list-tools
+mcp-valve --server <name> list-tools
 
 # Call tool
-mcp-tap --server <name> call <tool> --args '{"key":"value"}'
+mcp-valve --server <name> call <tool> --args '{"key":"value"}'
 
 # Override default args (empty array clears defaults)
-mcp-tap --server <name> --server-args '[]' call <tool> --args '{}'
+mcp-valve --server <name> --server-args '[]' call <tool> --args '{}'
 
 # Interactive shell
-mcp-tap --server <name> shell
+mcp-valve --server <name> shell
 ```
 
 ## Publishing to crates.io
@@ -130,11 +137,11 @@ mcp-tap --server <name> shell
 1. **Cargo.toml metadata**:
    ```toml
    [package]
-   name = "mcp-tap"
+   name = "mcp-valve"
    version = "1.0.0"
    edition = "2021"
    license = "MIT"
-   repository = "https://github.com/yonaka15/mcp-tap"
+   repository = "https://github.com/yonaka15/mcp-valve"
    keywords = ["mcp", "cli", "model-context-protocol"]
    categories = ["command-line-utilities", "development-tools"]
    ```

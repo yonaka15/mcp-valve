@@ -16,31 +16,35 @@
 //! ## Overview
 //!
 //! This tool provides a unified interface to any MCP server. Instead of maintaining
-//! separate CLI tools for each MCP server, configure servers in `~/.claude/scripts/mcp-servers.json`
+//! separate CLI tools for each MCP server, configure servers in `~/.config/mcp-valve/servers.json`
 //! and use this single client.
 //!
 //! ## Quick Start
 //!
 //! ```bash
 //! # List configured servers
-//! mcp-tap list-servers
+//! mcp-valve list-servers
 //!
 //! # List tools from a server
-//! mcp-tap --server playwright list-tools
+//! mcp-valve --server playwright list-tools
 //!
 //! # Call a tool
-//! mcp-tap --server playwright call browser_navigate --args '{"url":"https://example.com"}'
+//! mcp-valve --server playwright call browser_navigate --args '{"url":"https://example.com"}'
 //!
 //! # Daemon mode (for servers that support it)
-//! mcp-tap --server playwright start-daemon --server-args '["--gui"]'
-//! mcp-tap --server playwright call browser_navigate --args '{"url":"https://example.com"}'  # Uses daemon
-//! mcp-tap --server playwright daemon-status
-//! mcp-tap --server playwright stop-daemon
+//! mcp-valve --server playwright start-daemon --server-args '["--gui"]'
+//! mcp-valve --server playwright call browser_navigate --args '{"url":"https://example.com"}'  # Uses daemon
+//! mcp-valve --server playwright daemon-status
+//! mcp-valve --server playwright stop-daemon
 //! ```
 //!
 //! ## Configuration
 //!
-//! Server profiles are defined in `~/.claude/scripts/mcp-servers.json`:
+//! Config file is searched in order: `--config` flag, `MCP_VALVE_CONFIG` env var,
+//! `$XDG_CONFIG_HOME/mcp-valve/servers.json`, `~/.config/mcp-valve/servers.json`,
+//! `~/.claude/scripts/mcp-servers.json` (legacy).
+//!
+//! Example config:
 //!
 //! ```json
 //! {
@@ -76,6 +80,9 @@
 //! - **Protocol**: MCP 2025-06-18 (JSON-RPC 2.0)
 //! - **Transport**: STDIO / Unix socket (daemon)
 //! - **Dependencies**: serde, serde_json, anyhow, clap, nix
+
+#[cfg(not(unix))]
+compile_error!("mcp-valve requires a Unix platform (Linux, macOS, BSD)");
 
 use anyhow::{anyhow, Context, Result};
 use clap::{Parser, Subcommand};
@@ -117,14 +124,67 @@ struct ServerConfig {
     servers: HashMap<String, ServerProfile>,
 }
 
-fn load_server_config() -> Result<ServerConfig> {
+/// Resolves config file path with priority:
+/// 1. CLI flag (--config)
+/// 2. Environment variable (MCP_VALVE_CONFIG)
+/// 3. XDG_CONFIG_HOME/mcp-valve/servers.json
+/// 4. ~/.config/mcp-valve/servers.json
+/// 5. ~/.claude/scripts/mcp-servers.json (legacy)
+fn get_config_path(cli_config: Option<PathBuf>) -> Result<PathBuf> {
+    // 1. CLI flag (highest priority)
+    if let Some(path) = cli_config {
+        return Ok(path);
+    }
+
+    // 2. Environment variable
+    if let Ok(path) = std::env::var("MCP_VALVE_CONFIG") {
+        return Ok(PathBuf::from(path));
+    }
+
     let home = std::env::var("HOME").context("HOME environment variable not set")?;
-    let config_path = PathBuf::from(&home).join(".claude/scripts/mcp-servers.json");
+
+    // 3. XDG_CONFIG_HOME if set
+    if let Ok(xdg) = std::env::var("XDG_CONFIG_HOME") {
+        let path = PathBuf::from(xdg).join("mcp-valve/servers.json");
+        if path.exists() {
+            return Ok(path);
+        }
+    }
+
+    // 4. XDG default location
+    let xdg_default = PathBuf::from(&home).join(".config/mcp-valve/servers.json");
+    if xdg_default.exists() {
+        return Ok(xdg_default);
+    }
+
+    // 5. Legacy fallback
+    Ok(PathBuf::from(&home).join(".claude/scripts/mcp-servers.json"))
+}
+
+fn load_server_config(cli_config: Option<PathBuf>) -> Result<ServerConfig> {
+    let config_path = get_config_path(cli_config)?;
 
     if !config_path.exists() {
+        let home = std::env::var("HOME").unwrap_or_default();
         return Err(anyhow!(
-            "Configuration file not found: {}\nCreate it with server profiles.",
-            config_path.display()
+            "Configuration file not found.\n\n\
+            Searched locations (in order):\n  \
+            1. --config flag or MCP_VALVE_CONFIG env var\n  \
+            2. $XDG_CONFIG_HOME/mcp-valve/servers.json\n  \
+            3. ~/.config/mcp-valve/servers.json\n  \
+            4. ~/.claude/scripts/mcp-servers.json\n\n\
+            Create a config file at: {}\n\n\
+            Example:\n\
+            {{\n  \
+              \"server-name\": {{\n    \
+                \"command\": [\"npx\", \"@example/mcp-server\"],\n    \
+                \"default_args\": [],\n    \
+                \"supports_daemon\": true,\n    \
+                \"description\": \"Example MCP server\",\n    \
+                \"env\": {{}}\n  \
+              }}\n\
+            }}",
+            PathBuf::from(&home).join(".config/mcp-valve/servers.json").display()
         ));
     }
 
@@ -142,9 +202,9 @@ fn load_server_config() -> Result<ServerConfig> {
 // ============================================================================
 
 #[derive(Parser)]
-#[command(name = "mcp-tap")]
+#[command(name = "mcp-valve")]
 #[command(about = "Unified MCP CLI - Generic MCP Protocol Client")]
-#[command(version = "1.0.0")]
+#[command(version = "1.1.0")]
 struct Cli {
     /// Server name from config (e.g., playwright, zen)
     #[arg(short, long)]
@@ -153,6 +213,10 @@ struct Cli {
     /// Additional server arguments (JSON array, e.g., '["--gui", "--browser", "firefox"]')
     #[arg(long)]
     server_args: Option<String>,
+
+    /// Path to config file (overrides default locations)
+    #[arg(short, long, global = true)]
+    config: Option<PathBuf>,
 
     #[command(subcommand)]
     command: Commands,
@@ -295,7 +359,7 @@ impl McpClient {
                 "protocolVersion": "2025-06-18",
                 "capabilities": {},
                 "clientInfo": {
-                    "name": "mcp-tap",
+                    "name": "mcp-valve",
                     "version": "1.0.0"
                 }
             }
@@ -783,7 +847,7 @@ fn main() -> Result<()> {
     // Handle internal daemon command BEFORE clap parsing
     let args: Vec<String> = std::env::args().collect();
     if args.len() > 1 && args[1] == "__internal_daemon" {
-        // Find --server and --server-args by manual parsing
+        // Find --server, --server-args, and --config by manual parsing
         let server_name = args.iter()
             .position(|a| a == "--server")
             .and_then(|i| args.get(i + 1))
@@ -795,7 +859,12 @@ fn main() -> Result<()> {
             .and_then(|i| args.get(i + 1))
             .and_then(|s| serde_json::from_str::<Vec<String>>(s).ok());
 
-        let config = load_server_config()?;
+        let cli_config = args.iter()
+            .position(|a| a == "--config" || a == "-c")
+            .and_then(|i| args.get(i + 1))
+            .map(PathBuf::from);
+
+        let config = load_server_config(cli_config)?;
         let profile = config.servers.get(&server_name)
             .ok_or_else(|| anyhow!("Server '{}' not found", server_name))?;
 
@@ -811,7 +880,7 @@ fn main() -> Result<()> {
 
     match cli.command {
         Commands::ListServers => {
-            let config = load_server_config()?;
+            let config = load_server_config(cli.config.clone())?;
             println!("Configured MCP servers:\n");
             for (name, profile) in config.servers {
                 let desc = if profile.description.is_empty() {
@@ -837,7 +906,7 @@ fn main() -> Result<()> {
                 anyhow!("--server required. Use 'list-servers' to see available servers.")
             })?;
 
-            let config = load_server_config()?;
+            let config = load_server_config(cli.config.clone())?;
             let profile = config
                 .servers
                 .get(&server_name)
@@ -890,7 +959,7 @@ fn main() -> Result<()> {
                 anyhow!("--server required. Use 'list-servers' to see available servers.")
             })?;
 
-            let config = load_server_config()?;
+            let config = load_server_config(cli.config.clone())?;
             let profile = config
                 .servers
                 .get(&server_name)
@@ -914,7 +983,7 @@ fn main() -> Result<()> {
                 anyhow!("--server required. Use 'list-servers' to see available servers.")
             })?;
 
-            let config = load_server_config()?;
+            let config = load_server_config(cli.config.clone())?;
             let profile = config
                 .servers
                 .get(&server_name)
@@ -989,7 +1058,7 @@ fn main() -> Result<()> {
                 anyhow!("--server required")
             })?;
 
-            let config = load_server_config()?;
+            let config = load_server_config(cli.config.clone())?;
             let profile = config
                 .servers
                 .get(&server_name)
