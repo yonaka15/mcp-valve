@@ -418,7 +418,13 @@ impl McpClient {
             }
         });
 
-        let response = self.send_request(&request)?;
+        let response = match self.send_request(&request) {
+            Ok(resp) => resp,
+            Err(e) => {
+                let error_with_schema = self.format_error_with_schema(name, &e.to_string());
+                return Err(anyhow!("{}", error_with_schema));
+            }
+        };
         let result = response["result"].clone();
 
         // Check for tool-level errors (isError field in result)
@@ -433,7 +439,9 @@ impl McpClient {
                     .and_then(|t| t.as_str())
                     .unwrap_or("Tool execution failed");
 
-                return Err(anyhow!("Tool Error: {}", error_msg));
+                let error_with_schema =
+                    self.format_error_with_schema(name, &format!("Tool Error: {}", error_msg));
+                return Err(anyhow!("{}", error_with_schema));
             }
         }
 
@@ -450,6 +458,35 @@ impl McpClient {
 
         let response = self.send_request(&request)?;
         Ok(response["result"].clone())
+    }
+
+    /// Get the inputSchema for a specific tool
+    fn get_tool_schema(&mut self, tool_name: &str) -> Option<Value> {
+        self.list_tools()
+            .ok()
+            .and_then(|result| result.get("tools").cloned())
+            .and_then(|tools| tools.as_array().cloned())
+            .and_then(|tools| {
+                tools
+                    .into_iter()
+                    .find(|t| t.get("name").and_then(|n| n.as_str()) == Some(tool_name))
+            })
+            .and_then(|tool| tool.get("inputSchema").cloned())
+    }
+
+    /// Format error message with tool schema appended
+    fn format_error_with_schema(&mut self, tool_name: &str, error_msg: &str) -> String {
+        match self.get_tool_schema(tool_name) {
+            Some(schema) => {
+                let schema_str = serde_json::to_string_pretty(&schema)
+                    .unwrap_or_else(|_| schema.to_string());
+                format!(
+                    "{}\n\nSchema for tool '{}':\n{}",
+                    error_msg, tool_name, schema_str
+                )
+            }
+            None => error_msg.to_string(),
+        }
     }
 }
 
