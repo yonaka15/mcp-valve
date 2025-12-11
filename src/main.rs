@@ -25,16 +25,20 @@
 //! # List configured servers
 //! mcp-valve list-servers
 //!
-//! # List tools from a server
+//! # Start daemon (required before any tool operations)
+//! cd /path/to/your/project
+//! mcp-valve --server playwright start-daemon --server-args '["--gui"]'
+//!
+//! # List tools (requires daemon)
 //! mcp-valve --server playwright list-tools
 //!
-//! # Call a tool
+//! # Call a tool (requires daemon)
 //! mcp-valve --server playwright call browser_navigate --args '{"url":"https://example.com"}'
 //!
-//! # Daemon mode (for servers that support it)
-//! mcp-valve --server playwright start-daemon --server-args '["--gui"]'
-//! mcp-valve --server playwright call browser_navigate --args '{"url":"https://example.com"}'  # Uses daemon
+//! # Check daemon status
 //! mcp-valve --server playwright daemon-status
+//!
+//! # Stop daemon
 //! mcp-valve --server playwright stop-daemon
 //! ```
 //!
@@ -73,7 +77,7 @@
 //! - ✅ Interactive shell mode
 //! - ✅ Server-specific arguments via --server-args
 //! - ✅ Daemon mode with persistent state
-//! - ✅ Auto-fallback (daemon → STDIO)
+//! - ✅ Project-aware: displays current working directory for all operations
 //!
 //! ## Technical Details
 //!
@@ -497,6 +501,30 @@ impl Drop for McpClient {
 }
 
 // ============================================================================
+// Project Context
+// ============================================================================
+
+/// Get the current project path (current working directory)
+fn get_project_path() -> String {
+    std::env::current_dir()
+        .ok()
+        .and_then(|p| p.to_str().map(|s| s.to_string()))
+        .unwrap_or_else(|| ".".to_string())
+}
+
+/// Format error message when daemon is not running
+fn daemon_not_running_error(server_name: &str) -> anyhow::Error {
+    let project = get_project_path();
+    anyhow!(
+        "Daemon is not running for project '{}'\n\n\
+        Start daemon with:\n  \
+        cd {}\n  \
+        mcp-valve --server {} start-daemon",
+        project, project, server_name
+    )
+}
+
+// ============================================================================
 // Daemon Management
 // ============================================================================
 
@@ -571,6 +599,8 @@ impl DaemonManager {
             return Err(anyhow!("Daemon already running for '{}'", self.server_name));
         }
 
+        let project = get_project_path();
+        eprintln!("Project: {}", project);
         eprintln!("Profile: {}", self.pid_file.parent().unwrap().display());
         eprintln!("Starting MCP daemon for '{}'...", self.server_name);
 
@@ -646,15 +676,17 @@ impl DaemonManager {
 
     fn stop(&self) -> Result<()> {
         if !self.is_running()? {
-            return Err(anyhow!("Daemon not running for '{}'", self.server_name));
+            return Err(daemon_not_running_error(&self.server_name));
         }
 
+        let project = get_project_path();
         let pid_str = fs::read_to_string(&self.pid_file)?;
         let pid: i32 = pid_str.trim().parse()
             .context("Invalid PID in file")?;
 
         let socket_path = self.get_socket_path().ok();
 
+        eprintln!("Project: {}", project);
         eprintln!("Stopping daemon (PID: {})...", pid);
 
         // Send SIGTERM
@@ -692,7 +724,9 @@ impl DaemonManager {
     }
 
     fn status(&self) -> Result<()> {
+        let project = get_project_path();
         let profile_dir = self.pid_file.parent().unwrap();
+        println!("Project: {}", project);
         println!("Server: {}", self.server_name);
         println!("Profile: {}", profile_dir.display());
 
@@ -835,12 +869,12 @@ fn handle_client(mcp: &mut McpClient, mut stream: UnixStream) -> Result<()> {
     Ok(())
 }
 
-fn call_via_daemon(server_name: &str, tool: &str, args: Value) -> Result<Value> {
+fn connect_to_daemon(server_name: &str) -> Result<UnixStream> {
     let daemon_mgr = DaemonManager::new(server_name);
     let socket_path = daemon_mgr.get_socket_path()
         .context("Failed to get socket path (daemon not started?)")?;
 
-    let mut stream = UnixStream::connect(&socket_path)
+    let stream = UnixStream::connect(&socket_path)
         .context("Failed to connect to daemon (is it running?)")?;
 
     // Set timeouts
@@ -849,16 +883,10 @@ fn call_via_daemon(server_name: &str, tool: &str, args: Value) -> Result<Value> 
     stream.set_write_timeout(Some(Duration::from_secs(30)))
         .context("Failed to set write timeout")?;
 
-    let request = json!({
-        "jsonrpc": "2.0",
-        "id": 1,
-        "method": "tools/call",
-        "params": {
-            "name": tool,
-            "arguments": args
-        }
-    });
+    Ok(stream)
+}
 
+fn send_daemon_request(mut stream: UnixStream, request: Value) -> Result<Value> {
     let request_str = serde_json::to_string(&request)?;
     writeln!(stream, "{}", request_str)?;
 
@@ -874,6 +902,35 @@ fn call_via_daemon(server_name: &str, tool: &str, args: Value) -> Result<Value> 
     }
 
     Ok(response["result"].clone())
+}
+
+fn call_via_daemon(server_name: &str, tool: &str, args: Value) -> Result<Value> {
+    let stream = connect_to_daemon(server_name)?;
+
+    let request = json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "tools/call",
+        "params": {
+            "name": tool,
+            "arguments": args
+        }
+    });
+
+    send_daemon_request(stream, request)
+}
+
+fn list_tools_via_daemon(server_name: &str) -> Result<Value> {
+    let stream = connect_to_daemon(server_name)?;
+
+    let request = json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "tools/list",
+        "params": {}
+    });
+
+    send_daemon_request(stream, request)
 }
 
 // ============================================================================
@@ -944,18 +1001,16 @@ fn main() -> Result<()> {
             })?;
 
             let config = load_server_config(cli.config.clone())?;
-            let profile = config
+            let _profile = config
                 .servers
                 .get(&server_name)
                 .ok_or_else(|| anyhow!("Server '{}' not found in config", server_name))?;
 
-            // Parse extra server args
-            let extra_args = if let Some(args_str) = &cli.server_args {
-                Some(serde_json::from_str::<Vec<String>>(args_str)
-                    .context("Invalid JSON in --server-args (expected array of strings)")?)
-            } else {
-                None
-            };
+            // Require daemon to be running
+            let daemon_mgr = DaemonManager::new(&server_name);
+            if !daemon_mgr.is_running().unwrap_or(false) {
+                return Err(daemon_not_running_error(&server_name));
+            }
 
             // Parse tool arguments
             let json_str = if args == "-" {
@@ -971,21 +1026,7 @@ fn main() -> Result<()> {
             let args_json: Value =
                 serde_json::from_str(&json_str).context("Invalid JSON arguments")?;
 
-            // Try daemon first if server supports it, fallback to STDIO
-            let daemon_mgr = DaemonManager::new(&server_name);
-            let result = if profile.supports_daemon && daemon_mgr.is_running().unwrap_or(false) {
-                match call_via_daemon(&server_name, &tool, args_json.clone()) {
-                    Ok(result) => result,
-                    Err(e) => {
-                        eprintln!("Daemon call failed, falling back to STDIO: {}", e);
-                        let mut mcp = McpClient::start(profile, extra_args, &server_name)?;
-                        mcp.call_tool(&tool, args_json)?
-                    }
-                }
-            } else {
-                let mut mcp = McpClient::start(profile, extra_args, &server_name)?;
-                mcp.call_tool(&tool, args_json)?
-            };
+            let result = call_via_daemon(&server_name, &tool, args_json)?;
 
             println!("{}", serde_json::to_string_pretty(&result)?);
             Ok(())
@@ -997,20 +1038,18 @@ fn main() -> Result<()> {
             })?;
 
             let config = load_server_config(cli.config.clone())?;
-            let profile = config
+            let _profile = config
                 .servers
                 .get(&server_name)
                 .ok_or_else(|| anyhow!("Server '{}' not found in config", server_name))?;
 
-            let extra_args = if let Some(args_str) = &cli.server_args {
-                Some(serde_json::from_str::<Vec<String>>(args_str)
-                    .context("Invalid JSON in --server-args (expected array of strings)")?)
-            } else {
-                None
-            };
+            // Require daemon to be running
+            let daemon_mgr = DaemonManager::new(&server_name);
+            if !daemon_mgr.is_running().unwrap_or(false) {
+                return Err(daemon_not_running_error(&server_name));
+            }
 
-            let mut mcp = McpClient::start(profile, extra_args, &server_name)?;
-            let result = mcp.list_tools()?;
+            let result = list_tools_via_daemon(&server_name)?;
             println!("{}", serde_json::to_string_pretty(&result)?);
             Ok(())
         }
@@ -1021,20 +1060,19 @@ fn main() -> Result<()> {
             })?;
 
             let config = load_server_config(cli.config.clone())?;
-            let profile = config
+            let _profile = config
                 .servers
                 .get(&server_name)
                 .ok_or_else(|| anyhow!("Server '{}' not found in config", server_name))?;
 
-            let extra_args = if let Some(args_str) = &cli.server_args {
-                Some(serde_json::from_str::<Vec<String>>(args_str)
-                    .context("Invalid JSON in --server-args (expected array of strings)")?)
-            } else {
-                None
-            };
+            // Require daemon to be running
+            let daemon_mgr = DaemonManager::new(&server_name);
+            if !daemon_mgr.is_running().unwrap_or(false) {
+                return Err(daemon_not_running_error(&server_name));
+            }
 
-            let mut mcp = McpClient::start(profile, extra_args, &server_name)?;
-            println!("MCP Shell ({})", server_name);
+            let project = get_project_path();
+            println!("MCP Shell ({}) - Project: {}", server_name, project);
             println!("Commands: call <tool> [json], list-tools, exit");
             println!();
 
@@ -1055,7 +1093,7 @@ fn main() -> Result<()> {
                 }
 
                 if input == "list-tools" {
-                    match mcp.list_tools() {
+                    match list_tools_via_daemon(&server_name) {
                         Ok(result) => println!("{}", serde_json::to_string_pretty(&result)?),
                         Err(e) => eprintln!("Error: {}", e),
                     }
@@ -1070,7 +1108,7 @@ fn main() -> Result<()> {
                         let args = parts.get(1).unwrap_or(&"{}");
 
                         match serde_json::from_str(args) {
-                            Ok(args_json) => match mcp.call_tool(tool, args_json) {
+                            Ok(args_json) => match call_via_daemon(&server_name, tool, args_json) {
                                 Ok(result) => {
                                     println!("{}", serde_json::to_string_pretty(&result)?)
                                 }
