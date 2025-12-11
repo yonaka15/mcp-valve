@@ -6,15 +6,27 @@ Unified MCP (Model Context Protocol) client for any MCP server.
 
 ## Critical Guardrails
 
+- **Daemon required**: All tool operations (`call`, `list-tools`, `shell`) require daemon to be running first
+- **Project directory matters**: Daemon state is tied to the directory where `start-daemon` was run. Wrong directory = "daemon not running" error
 - **MANDATORY: Check schema before EVERY tool call**: Run `list-tools` and inspect `inputSchema` before calling any tool. Never guess field names.
 - **Field names are case-sensitive**: Use exactly what `inputSchema` shows (e.g., `url` not `URL`, `ref` not `reference`)
 - **Missing `--server`**: All commands except `list-servers` require `--server <name>`
-- **Daemon directory matters**: `.mcp-profile/` created in CWD. Wrong directory = separate daemon instance
 - **JSON array for `--server-args`**: Use `'["--arg1", "--arg2"]'`, not plain strings
 
 ## Core Workflow (80% of use cases)
 
-### 1. Check Schema First (Required)
+### 1. Start Daemon (Required First)
+
+```bash
+# Navigate to your project directory
+cd /path/to/your/project
+
+# Start daemon (creates .mcp-profile/<server>/ in CWD)
+mcp-valve --server <name> start-daemon
+# Output shows: Project: /path/to/your/project
+```
+
+### 2. Check Schema (Required Before Tool Calls)
 
 ```bash
 # Get tool schema
@@ -26,7 +38,7 @@ mcp-valve --server <name> list-tools 2>/dev/null | \
   }'
 ```
 
-### 2. Call Tool
+### 3. Call Tool
 
 ```bash
 # Direct JSON
@@ -36,28 +48,28 @@ mcp-valve --server <name> call <tool> --args '{"key":"value"}'
 echo '{"key":"value"}' | mcp-valve --server <name> call <tool> --args -
 ```
 
-### 3. Daemon Mode (for repeated calls)
+### 4. Stop Daemon When Done
 
 ```bash
-# Start (creates .mcp-profile/<server>/ in CWD)
-mcp-valve --server <name> start-daemon
-
-# Calls auto-route through daemon
-mcp-valve --server <name> call <tool> --args '{...}'
-
-# Check/stop
-mcp-valve --server <name> daemon-status
 mcp-valve --server <name> stop-daemon
 ```
 
-## When to Use Daemon vs STDIO
+## Error: Daemon Not Running
 
-| Scenario | Mode | Reason |
-|----------|------|--------|
-| Single tool call | STDIO | No overhead |
-| Multiple sequential calls | Daemon | Avoid repeated server startup |
-| Browser automation | Daemon | Maintains browser state |
-| Stateless tools (e.g., AI chat) | STDIO | No state to preserve |
+When you see this error:
+
+```
+Error: Daemon is not running for project '/path/to/project'
+
+Start daemon with:
+  cd /path/to/project
+  mcp-valve --server <name> start-daemon
+```
+
+**Causes:**
+1. Daemon was never started
+2. You're in a different directory than where daemon was started
+3. Daemon crashed (check `.mcp-profile/<server>/daemon.log`)
 
 ## Schema Validation Recovery
 
@@ -77,9 +89,11 @@ mcp-valve --server <name> list-tools 2>/dev/null | \
 
 | Anti-pattern | Why it fails | Correct approach |
 |--------------|--------------|------------------|
+| Calling tool without daemon | Daemon required | Run `start-daemon` first |
+| Starting daemon in `/tmp` | State in wrong location | Start from project root |
+| Calling from different directory | Different daemon instance | Always use same CWD |
 | Guessing field names | Schema mismatch | Always check `list-tools` first |
 | `--server-args "--gui"` | Not JSON array | `--server-args '["--gui"]'` |
-| Starting daemon in `/tmp` | State in wrong location | Start from project root |
 | Hardcoding tool schemas | Schemas change | Query `list-tools` dynamically |
 
 ## Configuration
@@ -117,17 +131,24 @@ Config file search order:
 # List servers
 mcp-valve list-servers
 
-# List tools (always do this first)
+# Start daemon (REQUIRED FIRST)
+cd /path/to/project
+mcp-valve --server <name> start-daemon
+
+# List tools
 mcp-valve --server <name> list-tools
 
 # Call tool
 mcp-valve --server <name> call <tool> --args '{"key":"value"}'
 
-# Override default args (empty array clears defaults)
-mcp-valve --server <name> --server-args '[]' call <tool> --args '{}'
+# Check daemon status
+mcp-valve --server <name> daemon-status
 
 # Interactive shell
 mcp-valve --server <name> shell
+
+# Stop daemon
+mcp-valve --server <name> stop-daemon
 ```
 
 ## Publishing to crates.io
@@ -178,7 +199,8 @@ Or document Unix-only support in README.
 
 | Error | Cause | Fix |
 |-------|-------|-----|
+| `Daemon is not running for project...` | Daemon not started or wrong CWD | Start daemon in correct directory |
 | `Server 'X' not found` | Missing config entry | Add to `mcp-servers.json` |
-| `does not support daemon mode` | `supports_daemon: false` | Use STDIO or update config |
+| `does not support daemon mode` | `supports_daemon: false` | Update config to `true` |
 | `Daemon already running` | Existing instance | `stop-daemon` first or use different CWD |
-| `Failed to connect to daemon` | Daemon crashed or wrong CWD | Check `daemon-status`, restart if needed |
+| `Failed to connect to daemon` | Daemon crashed | Check `daemon-status`, restart if needed |
