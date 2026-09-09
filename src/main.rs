@@ -208,7 +208,7 @@ fn load_server_config(cli_config: Option<PathBuf>) -> Result<ServerConfig> {
 #[derive(Parser)]
 #[command(name = "mcp-valve")]
 #[command(about = "Unified MCP CLI - Generic MCP Protocol Client")]
-#[command(version = "1.1.0")]
+#[command(version)]
 struct Cli {
     /// Server name from config (e.g., playwright, zen)
     #[arg(short, long)]
@@ -364,7 +364,7 @@ impl McpClient {
                 "capabilities": {},
                 "clientInfo": {
                     "name": "mcp-valve",
-                    "version": "1.0.0"
+                    "version": env!("CARGO_PKG_VERSION")
                 }
             }
         });
