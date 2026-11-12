@@ -120,6 +120,26 @@ Config file search order:
 }
 ```
 
+### Remote servers (`url` + `headers`)
+
+A server entry has either `command` (stdio) or `url` (Streamable HTTP), never both:
+
+```json
+{
+  "server-name": {
+    "url": "http://127.0.0.1:8080/mcp",
+    "headers": {"X-API-KEY": "{env:API_KEY}"},
+    "supports_daemon": true
+  }
+}
+```
+
+- Header values expand `{env:NAME}` and `{cmd:shell command}` once, at `start-daemon`. Never write a secret into the config file.
+- Code: `src/http.rs` (transport, SSE reader, header placeholders). stdio and HTTP share `await_response` in `src/main.rs`.
+- Redirects are not followed (the headers carry secrets). A connection silent for 10 minutes fails the request (`IDLE_TIMEOUT`).
+- Initialize-based revisions only (2025-03-26 to 2025-11-25). The stateless 2026-07-28 revision is issue #11.
+- A failure to reach the server or expand a header shows up in `.mcp-profile/<server>/daemon.log`, not in the output of `start-daemon`.
+
 ### Template Variables in Args
 
 | Variable | Value |
@@ -206,5 +226,8 @@ Or document Unix-only support in README.
 | `Server 'X' not found` | Missing config entry | Add to `mcp-servers.json` |
 | `does not support daemon mode` | `supports_daemon: false` | Update config to `true` |
 | `does not have "supports_daemon": true` | `call` / `list-tools` / `shell` on a server whose config has the field missing or `false` | Set `supports_daemon` to `true` in the config file the message names |
+| `has both "command" and "url"` / `needs either "command" (stdio) or "url" (HTTP)` | Config entry with both or neither | Keep exactly one of `command` and `url` |
+| `Header 'X': environment variable 'N' is not set` (in `daemon.log`) | `{env:N}` placeholder without the variable | Export the variable before `start-daemon` |
+| `HTTP <status> from <url>` | The remote server refused the request | Check the URL, the headers and the server; 401/403 usually means a wrong key |
 | `Daemon already running` | Existing instance | `stop-daemon` first or use different CWD |
 | `Failed to connect to daemon` | Daemon crashed | Check `daemon-status`, restart if needed |
