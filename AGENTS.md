@@ -202,5 +202,6 @@ Or document Unix-only support in README.
 | `Daemon is not running for project...` | Daemon not started or wrong CWD | Start daemon in correct directory |
 | `Server 'X' not found` | Missing config entry | Add to `mcp-servers.json` |
 | `does not support daemon mode` | `supports_daemon: false` | Update config to `true` |
+| `is configured with "supports_daemon": false` | `call` / `list-tools` / `shell` on a server with daemon mode disabled | Set `supports_daemon` to `true` in the config file the message names |
 | `Daemon already running` | Existing instance | `stop-daemon` first or use different CWD |
 | `Failed to connect to daemon` | Daemon crashed | Check `daemon-status`, restart if needed |
