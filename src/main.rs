@@ -524,6 +524,46 @@ fn daemon_not_running_error(server_name: &str) -> anyhow::Error {
     )
 }
 
+/// Format error message when the server's config does not enable daemon mode.
+///
+/// Tool operations only run through the daemon, so starting it is not the
+/// fix here: the config field is. Name the field and the file that holds it.
+/// A missing field deserializes to `false`, so the text covers both cases.
+fn daemon_disabled_message(server_name: &str, config_path: &str, project: &str) -> String {
+    format!(
+        "Server '{}' does not have \"supports_daemon\": true in its config \
+        (the field is missing or false)\n\n\
+        Tool operations (call, list-tools, shell) need daemon mode.\n\
+        Set \"supports_daemon\": true for '{}' in:\n  \
+        {}\n\n\
+        Then start the daemon:\n  \
+        cd {}\n  \
+        mcp-valve --server {} start-daemon",
+        server_name, server_name, config_path, project, server_name
+    )
+}
+
+/// Pick the error for a tool operation that found no running daemon:
+/// a config problem when daemon mode is disabled, otherwise "not running".
+fn daemon_unavailable_error(
+    server_name: &str,
+    profile: &ServerProfile,
+    cli_config: Option<PathBuf>,
+) -> anyhow::Error {
+    if profile.supports_daemon {
+        return daemon_not_running_error(server_name);
+    }
+
+    let config_path = get_config_path(cli_config)
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|_| "your mcp-valve config file".to_string());
+
+    anyhow!(
+        "{}",
+        daemon_disabled_message(server_name, &config_path, &get_project_path())
+    )
+}
+
 // ============================================================================
 // Daemon Management
 // ============================================================================
@@ -1001,7 +1041,7 @@ fn main() -> Result<()> {
             })?;
 
             let config = load_server_config(cli.config.clone())?;
-            let _profile = config
+            let profile = config
                 .servers
                 .get(&server_name)
                 .ok_or_else(|| anyhow!("Server '{}' not found in config", server_name))?;
@@ -1009,7 +1049,11 @@ fn main() -> Result<()> {
             // Require daemon to be running
             let daemon_mgr = DaemonManager::new(&server_name);
             if !daemon_mgr.is_running().unwrap_or(false) {
-                return Err(daemon_not_running_error(&server_name));
+                return Err(daemon_unavailable_error(
+                    &server_name,
+                    profile,
+                    cli.config.clone(),
+                ));
             }
 
             // Parse tool arguments
@@ -1038,7 +1082,7 @@ fn main() -> Result<()> {
             })?;
 
             let config = load_server_config(cli.config.clone())?;
-            let _profile = config
+            let profile = config
                 .servers
                 .get(&server_name)
                 .ok_or_else(|| anyhow!("Server '{}' not found in config", server_name))?;
@@ -1046,7 +1090,11 @@ fn main() -> Result<()> {
             // Require daemon to be running
             let daemon_mgr = DaemonManager::new(&server_name);
             if !daemon_mgr.is_running().unwrap_or(false) {
-                return Err(daemon_not_running_error(&server_name));
+                return Err(daemon_unavailable_error(
+                    &server_name,
+                    profile,
+                    cli.config.clone(),
+                ));
             }
 
             let result = list_tools_via_daemon(&server_name)?;
@@ -1060,7 +1108,7 @@ fn main() -> Result<()> {
             })?;
 
             let config = load_server_config(cli.config.clone())?;
-            let _profile = config
+            let profile = config
                 .servers
                 .get(&server_name)
                 .ok_or_else(|| anyhow!("Server '{}' not found in config", server_name))?;
@@ -1068,7 +1116,11 @@ fn main() -> Result<()> {
             // Require daemon to be running
             let daemon_mgr = DaemonManager::new(&server_name);
             if !daemon_mgr.is_running().unwrap_or(false) {
-                return Err(daemon_not_running_error(&server_name));
+                return Err(daemon_unavailable_error(
+                    &server_name,
+                    profile,
+                    cli.config.clone(),
+                ));
             }
 
             let project = get_project_path();
@@ -1170,5 +1222,65 @@ fn main() -> Result<()> {
             daemon_mgr.status()?;
             Ok(())
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn profile(supports_daemon: bool) -> ServerProfile {
+        ServerProfile {
+            command: vec!["true".to_string()],
+            default_args: vec![],
+            supports_daemon,
+            description: String::new(),
+            env: HashMap::new(),
+        }
+    }
+
+    #[test]
+    fn disabled_daemon_names_the_config_field_and_file() {
+        let err = daemon_unavailable_error(
+            "demo",
+            &profile(false),
+            Some(PathBuf::from("/tmp/servers.json")),
+        )
+        .to_string();
+
+        assert!(err.contains("\"supports_daemon\": true"), "{err}");
+        assert!(err.contains("missing or false"), "{err}");
+        assert!(err.contains("/tmp/servers.json"), "{err}");
+        assert!(err.contains(&format!("cd {}", get_project_path())), "{err}");
+        assert!(!err.contains("Daemon is not running"), "{err}");
+    }
+
+    #[test]
+    fn enabled_daemon_still_says_not_running() {
+        let err = daemon_unavailable_error(
+            "demo",
+            &profile(true),
+            Some(PathBuf::from("/tmp/servers.json")),
+        )
+        .to_string();
+
+        assert!(err.contains("Daemon is not running"), "{err}");
+        assert!(err.contains(&format!("cd {}", get_project_path())), "{err}");
+        assert!(err.contains("mcp-valve --server demo start-daemon"), "{err}");
+    }
+
+    #[test]
+    fn omitted_supports_daemon_field_is_reported_as_disabled() {
+        let config: ServerConfig =
+            serde_json::from_str(r#"{"demo": {"command": ["true"]}}"#).unwrap();
+        let profile = config.servers.get("demo").unwrap();
+        assert!(!profile.supports_daemon);
+
+        let err =
+            daemon_unavailable_error("demo", profile, Some(PathBuf::from("/tmp/servers.json")))
+                .to_string();
+
+        assert!(err.contains("missing or false"), "{err}");
+        assert!(!err.contains("Daemon is not running"), "{err}");
     }
 }
