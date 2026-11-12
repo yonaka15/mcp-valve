@@ -12,6 +12,7 @@ Unified MCP (Model Context Protocol) client for any MCP server.
 - **Field names are case-sensitive**: Use exactly what `inputSchema` shows (e.g., `url` not `URL`, `ref` not `reference`)
 - **Missing `--server`**: All commands except `list-servers` require `--server <name>`
 - **JSON array for `--server-args`**: Use `'["--arg1", "--arg2"]'`, not plain strings
+- **This repository and its crate are public**: issues, PRs, commit messages, docs and tests must not name the private product, deployment, host, port, config entry or environment variable where a problem was found. Describe the behaviour ("a remote MCP server that needs an API-key header") and use example values (`https://mcp.example.com/mcp`, `API_KEY`). Edit history, PR diffs and published crate versions cannot be fully removed afterwards
 
 ## Core Workflow (80% of use cases)
 
