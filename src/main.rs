@@ -392,11 +392,7 @@ impl McpClient {
         writeln!(self.stdin, "{}", request_str)?;
         self.stdin.flush()?;
 
-        let mut line = String::new();
-        self.stdout.read_line(&mut line)?;
-
-        let response: Value = serde_json::from_str(line.trim())
-            .context("Failed to parse JSON-RPC response")?;
+        let response = read_response(&mut self.stdout, &mut self.stdin, &request["id"])?;
 
         if let Some(error) = response.get("error") {
             return Err(anyhow!("MCP Error: {}", error));
@@ -1004,6 +1000,92 @@ fn list_tools_via_daemon(server_name: &str) -> Result<Value> {
 }
 
 // ============================================================================
+// Response Matching
+// ============================================================================
+
+/// Read server messages until the response to request `id` arrives.
+///
+/// A server may write other messages before the response. Each one is handled
+/// and skipped, so it can never be mistaken for the response (which would also
+/// leave the real response in the pipe for the next request):
+///
+/// - a notification (`method`, no `id`), e.g. `notifications/progress`: logged
+/// - a server-to-client request (`method` and `id`): answered, because the
+///   server may wait for the answer before it continues. `ping` gets an empty
+///   result; anything else gets "Method not found", since this client
+///   implements no client-side features
+/// - a response carrying a different `id`: logged
+/// - a line that is not a JSON object: logged
+///
+/// Logging goes to stderr, which is `daemon.log` for the daemon process.
+fn read_response<R: BufRead, W: Write>(
+    reader: &mut R,
+    writer: &mut W,
+    id: &Value,
+) -> Result<Value> {
+    let brief = |text: &str| -> String { text.chars().take(200).collect() };
+
+    loop {
+        let mut line = String::new();
+        let bytes = reader
+            .read_line(&mut line)
+            .context("Failed to read from MCP server")?;
+        if bytes == 0 {
+            return Err(anyhow!(
+                "MCP server closed its output before answering request {}",
+                id
+            ));
+        }
+
+        let text = line.trim();
+        if text.is_empty() {
+            continue;
+        }
+
+        let message: Value = match serde_json::from_str(text) {
+            Ok(value @ Value::Object(_)) => value,
+            _ => {
+                eprintln!("Skipping non-JSON-RPC output from server: {}", brief(text));
+                continue;
+            }
+        };
+
+        let message_id = message.get("id").filter(|v| !v.is_null());
+
+        if let Some(method) = message.get("method").and_then(|m| m.as_str()) {
+            let Some(server_request_id) = message_id else {
+                eprintln!("Skipping notification from server: {}", method);
+                continue;
+            };
+
+            let reply = if method == "ping" {
+                json!({"jsonrpc": "2.0", "id": server_request_id, "result": {}})
+            } else {
+                eprintln!("Declining request from server: {}", method);
+                json!({
+                    "jsonrpc": "2.0",
+                    "id": server_request_id,
+                    "error": {"code": -32601, "message": format!("Method not found: {}", method)}
+                })
+            };
+            writeln!(writer, "{}", serde_json::to_string(&reply)?)?;
+            writer.flush()?;
+            continue;
+        }
+
+        if message_id == Some(id) {
+            return Ok(message);
+        }
+
+        eprintln!(
+            "Skipping response with unexpected id (waiting for {}): {}",
+            id,
+            brief(text)
+        );
+    }
+}
+
+// ============================================================================
 // Result Unwrapping (call --result)
 // ============================================================================
 
@@ -1424,6 +1506,73 @@ mod tests {
         assert!(!parse(&[]));
         assert!(parse(&["--result"]));
         assert!(parse(&["--args", "{}", "--result"]));
+    }
+
+    fn read_with(input: &str, id: u64) -> (Result<Value>, String) {
+        let mut reader = std::io::Cursor::new(input.as_bytes().to_vec());
+        let mut written: Vec<u8> = Vec::new();
+        let result = read_response(&mut reader, &mut written, &json!(id));
+        (result, String::from_utf8(written).unwrap())
+    }
+
+    #[test]
+    fn read_response_skips_notifications_and_other_output() {
+        let input = concat!(
+            "\n",
+            "server starting, not json\n",
+            "[1, 2, 3]\n",
+            r#"{"jsonrpc":"2.0","method":"notifications/progress","params":{"progress":1}}"#,
+            "\n",
+            r#"{"jsonrpc":"2.0","id":6,"result":{"stale":true}}"#,
+            "\n",
+            r#"{"jsonrpc":"2.0","id":7,"result":{"ok":true}}"#,
+            "\n",
+        );
+        let (result, written) = read_with(input, 7);
+
+        assert_eq!(result.unwrap()["result"], json!({"ok": true}));
+        assert!(written.is_empty(), "nothing should be sent back: {written}");
+    }
+
+    #[test]
+    fn read_response_answers_server_requests_before_continuing() {
+        let input = concat!(
+            r#"{"jsonrpc":"2.0","id":"srv-1","method":"ping"}"#,
+            "\n",
+            r#"{"jsonrpc":"2.0","id":7,"method":"roots/list"}"#,
+            "\n",
+            r#"{"jsonrpc":"2.0","id":7,"result":{"ok":true}}"#,
+            "\n",
+        );
+        let (result, written) = read_with(input, 7);
+
+        // The server request reuses id 7; it must not be taken for the response.
+        assert_eq!(result.unwrap()["result"], json!({"ok": true}));
+
+        let replies: Vec<Value> = written
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect();
+        assert_eq!(replies.len(), 2);
+        assert_eq!(replies[0], json!({"jsonrpc": "2.0", "id": "srv-1", "result": {}}));
+        assert_eq!(replies[1]["id"], json!(7));
+        assert_eq!(replies[1]["error"]["code"], json!(-32601));
+    }
+
+    #[test]
+    fn read_response_returns_error_responses_and_reports_eof() {
+        let (result, _) = read_with(
+            "{\"jsonrpc\":\"2.0\",\"id\":7,\"error\":{\"code\":-32602,\"message\":\"bad\"}}\n",
+            7,
+        );
+        assert_eq!(result.unwrap()["error"]["code"], json!(-32602));
+
+        let (result, _) = read_with(
+            "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/message\"}\n",
+            7,
+        );
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("closed its output"), "{err}");
     }
 
     #[test]
