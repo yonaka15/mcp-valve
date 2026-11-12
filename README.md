@@ -114,13 +114,15 @@ Arguments support template expansion:
 By default `call` prints the MCP result envelope (`content`, `structuredContent`, ...). With `--result` it prints the payload:
 
 - `structuredContent` when the server sent it (any JSON value)
-- otherwise one document per `content` item: text that parses as JSON is re-printed as JSON, other text is printed as is, and non-text items (image, resource, ...) are printed as their JSON object
+- otherwise one document per `content` item: a text item's text exactly as the server sent it, and a non-text item (image, resource, ...) as its JSON object
 
 ```bash
 mcp-valve --server <name> call <tool> --args '{...}' --result | jq '.series[0]'
 ```
 
 A tool error (`isError: true`) exits non-zero with or without the flag.
+
+Text is not parsed or reformatted, so JSON text reaches `jq` with its numbers and key order intact. The output is a stream of documents: a result that mixes plain text with JSON (or with an image item) is not valid input for `jq .` as a whole, and a result with empty `content` prints nothing.
 
 ## Daemon Mode
 

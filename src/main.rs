@@ -240,7 +240,7 @@ enum Commands {
         args: String,
         /// Print the tool's result instead of the MCP envelope:
         /// structuredContent when the server sent it, otherwise each
-        /// content[].text (re-printed as JSON when it parses as JSON)
+        /// content[].text exactly as the server sent it
         #[arg(long)]
         result: bool,
     },
@@ -984,15 +984,20 @@ fn list_tools_via_daemon(server_name: &str) -> Result<Value> {
 
 /// Turn a `tools/call` result into the documents `call --result` prints.
 ///
-/// - `structuredContent` present (any JSON value): that value alone, as JSON.
-/// - otherwise one document per `content` item: a text item whose text parses
-///   as JSON is re-printed as JSON, any other text is printed as is, and a
-///   non-text item (image, audio, resource, ...) is printed as its JSON object.
+/// - `structuredContent` present and not null (any JSON value): that value
+///   alone, as JSON.
+/// - otherwise one document per `content` item: a text item's text exactly as
+///   the server sent it, and a non-text item (image, audio, resource, ...) as
+///   its JSON object.
 /// - a result with neither field is printed whole, so nothing is hidden.
+///
+/// Text is never parsed and re-serialised: doing so would rewrite integers
+/// beyond u64 as floats and reorder object keys. JSON text is already valid
+/// input for jq as it is.
 fn unwrap_tool_result(result: &Value) -> Vec<String> {
     let pretty = |v: &Value| serde_json::to_string_pretty(v).unwrap_or_else(|_| v.to_string());
 
-    if let Some(structured) = result.get("structuredContent") {
+    if let Some(structured) = result.get("structuredContent").filter(|v| !v.is_null()) {
         return vec![pretty(structured)];
     }
 
@@ -1002,14 +1007,12 @@ fn unwrap_tool_result(result: &Value) -> Vec<String> {
 
     items
         .iter()
-        .map(|item| match item.get("text").and_then(|t| t.as_str()) {
-            Some(text) if item.get("type").and_then(|t| t.as_str()) == Some("text") => {
-                match serde_json::from_str::<Value>(text) {
-                    Ok(parsed) => pretty(&parsed),
-                    Err(_) => text.to_string(),
-                }
+        .map(|item| {
+            let is_text = item.get("type").and_then(|t| t.as_str()) == Some("text");
+            match item.get("text").and_then(|t| t.as_str()) {
+                Some(text) if is_text => text.to_string(),
+                _ => pretty(item),
             }
-            _ => pretty(item),
         })
         .collect()
 }
@@ -1322,29 +1325,39 @@ mod tests {
             "content": [{"type": "text", "text": "summary"}],
             "structuredContent": {"a": 1}
         });
-        assert_eq!(unwrap_tool_result(&object), vec![json_pretty(&json!({"a": 1}))]);
+        assert_eq!(unwrap_tool_result(&object), vec!["{\n  \"a\": 1\n}"]);
 
         let array = json!({
             "content": [{"type": "text", "text": "summary"}],
             "structuredContent": [1, 2]
         });
-        assert_eq!(unwrap_tool_result(&array), vec![json_pretty(&json!([1, 2]))]);
+        assert_eq!(unwrap_tool_result(&array), vec!["[\n  1,\n  2\n]"]);
     }
 
     #[test]
-    fn unwrap_reprints_json_text_and_keeps_plain_text() {
+    fn unwrap_treats_null_structured_content_as_absent() {
+        let result = json!({
+            "content": [{"type": "text", "text": "real answer"}],
+            "structuredContent": null
+        });
+        assert_eq!(unwrap_tool_result(&result), vec!["real answer"]);
+    }
+
+    #[test]
+    fn unwrap_prints_text_exactly_as_sent() {
+        // Key order, a 30-digit integer, exponent notation and bare scalars
+        // must all survive: none of them is parsed or re-serialised.
+        let json_text = r#"{"z":1,"a":123456789012345678901234567890,"e":1E5}"#;
         let result = json!({
             "content": [
-                {"type": "text", "text": "{\"status\":\"completed\",\"series\":[1]}"},
-                {"type": "text", "text": "plain words"}
+                {"type": "text", "text": json_text},
+                {"type": "text", "text": "plain words\nsecond line"},
+                {"type": "text", "text": "42"}
             ]
         });
         assert_eq!(
             unwrap_tool_result(&result),
-            vec![
-                json_pretty(&json!({"status": "completed", "series": [1]})),
-                "plain words".to_string()
-            ]
+            vec![json_text, "plain words\nsecond line", "42"]
         );
     }
 
@@ -1352,17 +1365,35 @@ mod tests {
     fn unwrap_prints_non_text_items_as_json_and_hides_nothing() {
         let image = json!({"type": "image", "data": "AAAA", "mimeType": "image/png"});
         let result = json!({ "content": [image.clone()] });
-        assert_eq!(unwrap_tool_result(&result), vec![json_pretty(&image)]);
+        assert_eq!(
+            unwrap_tool_result(&result),
+            vec![serde_json::to_string_pretty(&image).unwrap()]
+        );
 
         let empty = json!({ "content": [] });
         assert!(unwrap_tool_result(&empty).is_empty());
 
         let neither = json!({ "resultType": "input_required", "inputRequests": {} });
-        assert_eq!(unwrap_tool_result(&neither), vec![json_pretty(&neither)]);
+        assert_eq!(
+            unwrap_tool_result(&neither),
+            vec![serde_json::to_string_pretty(&neither).unwrap()]
+        );
     }
 
-    fn json_pretty(v: &Value) -> String {
-        serde_json::to_string_pretty(v).unwrap()
+    #[test]
+    fn call_result_flag_is_off_by_default_and_parses() {
+        let parse = |extra: &[&str]| {
+            let mut argv = vec!["mcp-valve", "--server", "s", "call", "t"];
+            argv.extend_from_slice(extra);
+            match Cli::try_parse_from(argv).unwrap().command {
+                Commands::Call { result, .. } => result,
+                _ => panic!("expected the call subcommand"),
+            }
+        };
+
+        assert!(!parse(&[]));
+        assert!(parse(&["--result"]));
+        assert!(parse(&["--args", "{}", "--result"]));
     }
 
     #[test]
