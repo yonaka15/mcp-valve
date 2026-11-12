@@ -104,9 +104,23 @@ Arguments support template expansion:
 | `start-daemon` | Start persistent daemon (required first) |
 | `list-tools` | List available tools from server |
 | `call <tool>` | Call a tool with JSON arguments |
+| `call <tool> --result` | Print the tool's result instead of the MCP envelope (for piping to `jq`) |
 | `shell` | Interactive REPL mode |
 | `daemon-status` | Check daemon status |
 | `stop-daemon` | Stop running daemon |
+
+### `call --result`
+
+By default `call` prints the MCP result envelope (`content`, `structuredContent`, ...). With `--result` it prints the payload:
+
+- `structuredContent` when the server sent it (any JSON value)
+- otherwise one document per `content` item: text that parses as JSON is re-printed as JSON, other text is printed as is, and non-text items (image, resource, ...) are printed as their JSON object
+
+```bash
+mcp-valve --server <name> call <tool> --args '{...}' --result | jq '.series[0]'
+```
+
+A tool error (`isError: true`) exits non-zero with or without the flag.
 
 ## Daemon Mode
 

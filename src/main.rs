@@ -238,6 +238,11 @@ enum Commands {
         /// Arguments as JSON string
         #[arg(short, long, default_value = "{}")]
         args: String,
+        /// Print the tool's result instead of the MCP envelope:
+        /// structuredContent when the server sent it, otherwise each
+        /// content[].text (re-printed as JSON when it parses as JSON)
+        #[arg(long)]
+        result: bool,
     },
 
     /// List all available tools from the server
@@ -974,6 +979,42 @@ fn list_tools_via_daemon(server_name: &str) -> Result<Value> {
 }
 
 // ============================================================================
+// Result Unwrapping (call --result)
+// ============================================================================
+
+/// Turn a `tools/call` result into the documents `call --result` prints.
+///
+/// - `structuredContent` present (any JSON value): that value alone, as JSON.
+/// - otherwise one document per `content` item: a text item whose text parses
+///   as JSON is re-printed as JSON, any other text is printed as is, and a
+///   non-text item (image, audio, resource, ...) is printed as its JSON object.
+/// - a result with neither field is printed whole, so nothing is hidden.
+fn unwrap_tool_result(result: &Value) -> Vec<String> {
+    let pretty = |v: &Value| serde_json::to_string_pretty(v).unwrap_or_else(|_| v.to_string());
+
+    if let Some(structured) = result.get("structuredContent") {
+        return vec![pretty(structured)];
+    }
+
+    let Some(items) = result.get("content").and_then(|c| c.as_array()) else {
+        return vec![pretty(result)];
+    };
+
+    items
+        .iter()
+        .map(|item| match item.get("text").and_then(|t| t.as_str()) {
+            Some(text) if item.get("type").and_then(|t| t.as_str()) == Some("text") => {
+                match serde_json::from_str::<Value>(text) {
+                    Ok(parsed) => pretty(&parsed),
+                    Err(_) => text.to_string(),
+                }
+            }
+            _ => pretty(item),
+        })
+        .collect()
+}
+
+// ============================================================================
 // Main
 // ============================================================================
 
@@ -1035,7 +1076,7 @@ fn main() -> Result<()> {
             Ok(())
         }
 
-        Commands::Call { tool, args } => {
+        Commands::Call { tool, args, result: unwrap } => {
             let server_name = cli.server.ok_or_else(|| {
                 anyhow!("--server required. Use 'list-servers' to see available servers.")
             })?;
@@ -1072,7 +1113,13 @@ fn main() -> Result<()> {
 
             let result = call_via_daemon(&server_name, &tool, args_json)?;
 
-            println!("{}", serde_json::to_string_pretty(&result)?);
+            if unwrap {
+                for doc in unwrap_tool_result(&result) {
+                    println!("{}", doc);
+                }
+            } else {
+                println!("{}", serde_json::to_string_pretty(&result)?);
+            }
             Ok(())
         }
 
@@ -1267,6 +1314,55 @@ mod tests {
         assert!(err.contains("Daemon is not running"), "{err}");
         assert!(err.contains(&format!("cd {}", get_project_path())), "{err}");
         assert!(err.contains("mcp-valve --server demo start-daemon"), "{err}");
+    }
+
+    #[test]
+    fn unwrap_prefers_structured_content_of_any_json_type() {
+        let object = json!({
+            "content": [{"type": "text", "text": "summary"}],
+            "structuredContent": {"a": 1}
+        });
+        assert_eq!(unwrap_tool_result(&object), vec![json_pretty(&json!({"a": 1}))]);
+
+        let array = json!({
+            "content": [{"type": "text", "text": "summary"}],
+            "structuredContent": [1, 2]
+        });
+        assert_eq!(unwrap_tool_result(&array), vec![json_pretty(&json!([1, 2]))]);
+    }
+
+    #[test]
+    fn unwrap_reprints_json_text_and_keeps_plain_text() {
+        let result = json!({
+            "content": [
+                {"type": "text", "text": "{\"status\":\"completed\",\"series\":[1]}"},
+                {"type": "text", "text": "plain words"}
+            ]
+        });
+        assert_eq!(
+            unwrap_tool_result(&result),
+            vec![
+                json_pretty(&json!({"status": "completed", "series": [1]})),
+                "plain words".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn unwrap_prints_non_text_items_as_json_and_hides_nothing() {
+        let image = json!({"type": "image", "data": "AAAA", "mimeType": "image/png"});
+        let result = json!({ "content": [image.clone()] });
+        assert_eq!(unwrap_tool_result(&result), vec![json_pretty(&image)]);
+
+        let empty = json!({ "content": [] });
+        assert!(unwrap_tool_result(&empty).is_empty());
+
+        let neither = json!({ "resultType": "input_required", "inputRequests": {} });
+        assert_eq!(unwrap_tool_result(&neither), vec![json_pretty(&neither)]);
+    }
+
+    fn json_pretty(v: &Value) -> String {
+        serde_json::to_string_pretty(v).unwrap()
     }
 
     #[test]
