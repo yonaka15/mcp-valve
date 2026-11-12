@@ -46,6 +46,9 @@ mcp-valve --server <name> call <tool> --args '{"key":"value"}'
 
 # From stdin (for complex JSON)
 echo '{"key":"value"}' | mcp-valve --server <name> call <tool> --args -
+
+# Print the payload instead of the MCP envelope (structuredContent, else content[].text)
+mcp-valve --server <name> call <tool> --args '{"key":"value"}' --result | jq .
 ```
 
 ### 4. Stop Daemon When Done
