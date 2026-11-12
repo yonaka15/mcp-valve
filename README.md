@@ -95,7 +95,7 @@ A server reached over HTTP has a `url` instead of a `command`:
 ```json
 {
   "remote-example": {
-    "url": "http://127.0.0.1:8080/mcp",
+    "url": "https://mcp.example.com/mcp",
     "headers": { "X-API-KEY": "{cmd:op read op://Vault/Item/credential}" },
     "supports_daemon": true,
     "description": "Example remote MCP server"
