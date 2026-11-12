@@ -96,12 +96,13 @@ use nix::unistd::{setsid, Pid};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashMap;
+use std::ffi::OsString;
 use std::fs;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::os::unix::process::CommandExt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::time::Duration;
 
@@ -569,6 +570,32 @@ fn daemon_unavailable_error(
     )
 }
 
+/// Arguments for the `__internal_daemon` process that `start-daemon` spawns.
+///
+/// The config path is always passed, so the daemon loads the same file the
+/// client resolved (`--config`, `MCP_VALVE_CONFIG`, XDG or legacy) instead of
+/// resolving one again on its own.
+fn internal_daemon_args(
+    server_name: &str,
+    extra_args: Option<&[String]>,
+    config_path: &Path,
+) -> Result<Vec<OsString>> {
+    let mut args: Vec<OsString> = vec![
+        "__internal_daemon".into(),
+        "--server".into(),
+        server_name.into(),
+        "--config".into(),
+        config_path.as_os_str().to_owned(),
+    ];
+
+    if let Some(extra) = extra_args {
+        args.push("--server-args".into());
+        args.push(serde_json::to_string(extra)?.into());
+    }
+
+    Ok(args)
+}
+
 // ============================================================================
 // Daemon Management
 // ============================================================================
@@ -632,6 +659,7 @@ impl DaemonManager {
         &self,
         profile: &ServerProfile,
         extra_args: Option<Vec<String>>,
+        config_path: &Path,
     ) -> Result<()> {
         if !profile.supports_daemon {
             return Err(anyhow!(
@@ -651,14 +679,11 @@ impl DaemonManager {
 
         // Build daemon command
         let mut cmd = Command::new(std::env::current_exe()?);
-        cmd.arg("__internal_daemon");
-        cmd.arg("--server");
-        cmd.arg(&self.server_name);
-
-        if let Some(ref args) = extra_args {
-            cmd.arg("--server-args");
-            cmd.arg(serde_json::to_string(args)?);
-        }
+        cmd.args(internal_daemon_args(
+            &self.server_name,
+            extra_args.as_deref(),
+            config_path,
+        )?);
 
         // Create log file for daemon stderr
         let profile_dir = self.pid_file.parent().unwrap();
@@ -1248,8 +1273,13 @@ fn main() -> Result<()> {
                 None
             };
 
+            // Resolve the config file once and hand it to the daemon, made
+            // absolute so it does not depend on the daemon's working directory.
+            let config_path = get_config_path(cli.config.clone())?;
+            let config_path = std::path::absolute(&config_path).unwrap_or(config_path);
+
             let daemon_mgr = DaemonManager::new(&server_name);
-            daemon_mgr.start(profile, extra_args)?;
+            daemon_mgr.start(profile, extra_args, &config_path)?;
             Ok(())
         }
 
@@ -1394,6 +1424,31 @@ mod tests {
         assert!(!parse(&[]));
         assert!(parse(&["--result"]));
         assert!(parse(&["--args", "{}", "--result"]));
+    }
+
+    #[test]
+    fn internal_daemon_args_always_carry_the_config_path() {
+        let args = internal_daemon_args("demo", None, Path::new("/tmp/other.json")).unwrap();
+        assert_eq!(
+            args,
+            ["__internal_daemon", "--server", "demo", "--config", "/tmp/other.json"]
+        );
+
+        let extra = vec!["--gui".to_string()];
+        let args =
+            internal_daemon_args("demo", Some(&extra), Path::new("/tmp/other.json")).unwrap();
+        assert_eq!(
+            args,
+            [
+                "__internal_daemon",
+                "--server",
+                "demo",
+                "--config",
+                "/tmp/other.json",
+                "--server-args",
+                r#"["--gui"]"#
+            ]
+        );
     }
 
     #[test]
