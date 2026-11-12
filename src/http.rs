@@ -507,7 +507,7 @@ mod tests {
         assert!(HttpTransport::new("http://127.0.0.1:1/mcp", &none).is_ok());
         assert!(HttpTransport::new("https://example.com/mcp", &none).is_ok());
         assert!(HttpTransport::new("ftp://example.com/mcp", &none).is_err());
-        assert!(HttpTransport::new("127.0.0.1:8780/mcp", &none).is_err());
+        assert!(HttpTransport::new("127.0.0.1:8080/mcp", &none).is_err());
     }
 
     #[test]

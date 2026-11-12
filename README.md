@@ -94,11 +94,11 @@ A server reached over HTTP has a `url` instead of a `command`:
 
 ```json
 {
-  "realboard": {
-    "url": "http://127.0.0.1:8780/mcp",
+  "remote-example": {
+    "url": "https://mcp.example.com/mcp",
     "headers": { "X-API-KEY": "{cmd:op read op://Vault/Item/credential}" },
     "supports_daemon": true,
-    "description": "RealBoard MCP"
+    "description": "Example remote MCP server"
   }
 }
 ```

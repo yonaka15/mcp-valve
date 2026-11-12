@@ -1753,13 +1753,13 @@ mod tests {
         assert_eq!(stdio.transport_kind("s").unwrap(), TransportKind::Stdio);
 
         let http = parse(
-            r#"{"url": "http://127.0.0.1:8780/mcp", "headers": {"X-API-KEY": "{env:RB_API_KEY}"}}"#,
+            r#"{"url": "http://127.0.0.1:8080/mcp", "headers": {"X-API-KEY": "{env:API_KEY}"}}"#,
         );
         assert_eq!(
             http.transport_kind("s").unwrap(),
-            TransportKind::Http("http://127.0.0.1:8780/mcp")
+            TransportKind::Http("http://127.0.0.1:8080/mcp")
         );
-        assert_eq!(http.headers["X-API-KEY"], "{env:RB_API_KEY}");
+        assert_eq!(http.headers["X-API-KEY"], "{env:API_KEY}");
 
         let both = parse(r#"{"command": ["x"], "url": "http://h/mcp"}"#);
         let err = both.transport_kind("demo").unwrap_err().to_string();

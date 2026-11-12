@@ -127,7 +127,7 @@ A server entry has either `command` (stdio) or `url` (Streamable HTTP), never bo
 ```json
 {
   "server-name": {
-    "url": "http://127.0.0.1:8780/mcp",
+    "url": "https://mcp.example.com/mcp",
     "headers": {"X-API-KEY": "{env:API_KEY}"},
     "supports_daemon": true
   }
