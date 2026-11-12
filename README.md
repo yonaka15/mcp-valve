@@ -108,11 +108,13 @@ Header values may contain placeholders, so no secret has to be written into the 
 | Placeholder | Expands to |
 |-------------|------------|
 | `{env:NAME}` | The environment variable `NAME`, as seen by `start-daemon`. A missing variable is an error |
-| `{cmd:command}` | The trimmed output of `command`, run with `sh -c`. The command ends at the first `}` |
+| `{cmd:command}` | The trimmed output of `command`, run with `sh -c`. Braces inside the command must be balanced |
 
 Placeholders are expanded once, when the daemon starts. `list-servers` shows header names, never values.
 
 What is supported: the Streamable HTTP transport of the initialize-based MCP revisions (2025-03-26 to 2025-11-25): JSON and SSE responses, the `Mcp-Session-Id` session (a new session is started when the server answers 404), and the `MCP-Protocol-Version` header.
+
+Redirects are not followed, so the configured headers are never sent to another host. A response that stays silent for 10 minutes ends the request.
 
 What is not: the standalone GET stream, resuming a broken stream, OAuth, the old HTTP+SSE transport (2024-11-05), and the stateless 2026-07-28 revision. The session is not deleted on `stop-daemon`. Opening a tunnel or VPN to the server is outside mcp-valve.
 

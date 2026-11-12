@@ -459,7 +459,13 @@ impl McpClient {
                 if e.downcast_ref::<http::SessionExpired>().is_some()
                     && request["method"] != "initialize" =>
             {
-                eprintln!("MCP session expired; starting a new session");
+                eprintln!(
+                    "MCP session expired; starting a new session and sending {} again",
+                    request["method"]
+                );
+                if let Transport::Http(http) = &mut self.transport {
+                    http.reset_session();
+                }
                 self.initialize()?;
                 self.exchange(request)?
             }
@@ -1300,7 +1306,9 @@ fn main() -> Result<()> {
                     &profile.description
                 };
                 println!("  {}: {}", name, desc);
-                if let Some(url) = &profile.url {
+                if let Err(problem) = profile.transport_kind(&name) {
+                    println!("    INVALID: {}", problem);
+                } else if let Some(url) = &profile.url {
                     println!("    URL: {}", url);
                     if !profile.headers.is_empty() {
                         let mut names: Vec<&String> = profile.headers.keys().collect();
@@ -1492,7 +1500,13 @@ fn main() -> Result<()> {
 
             // Catch a config entry with both or neither of command/url here,
             // where the user sees it, instead of in daemon.log.
-            profile.transport_kind(&server_name)?;
+            let kind = profile.transport_kind(&server_name)?;
+            if matches!(kind, TransportKind::Http(_)) && cli.server_args.is_some() {
+                eprintln!(
+                    "Warning: --server-args is ignored, '{}' is a url server",
+                    server_name
+                );
+            }
 
             // Resolve the config file once and hand it to the daemon, made
             // absolute so it does not depend on the daemon's working directory.

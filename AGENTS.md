@@ -136,6 +136,7 @@ A server entry has either `command` (stdio) or `url` (Streamable HTTP), never bo
 
 - Header values expand `{env:NAME}` and `{cmd:shell command}` once, at `start-daemon`. Never write a secret into the config file.
 - Code: `src/http.rs` (transport, SSE reader, header placeholders). stdio and HTTP share `await_response` in `src/main.rs`.
+- Redirects are not followed (the headers carry secrets). A connection silent for 10 minutes fails the request (`IDLE_TIMEOUT`).
 - Initialize-based revisions only (2025-03-26 to 2025-11-25). The stateless 2026-07-28 revision is issue #11.
 - A failure to reach the server or expand a header shows up in `.mcp-profile/<server>/daemon.log`, not in the output of `start-daemon`.
 
