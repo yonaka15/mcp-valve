@@ -88,6 +88,8 @@
 #[cfg(not(unix))]
 compile_error!("mcp-valve requires a Unix platform (Linux, macOS, BSD)");
 
+mod http;
+
 use anyhow::{anyhow, Context, Result};
 use clap::{Parser, Subcommand};
 use nix::sys::signal::{kill, Signal};
@@ -112,7 +114,16 @@ use std::time::Duration;
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
 struct ServerProfile {
+    /// stdio server: the command to spawn. Exactly one of `command` and `url`.
+    #[serde(default)]
     command: Vec<String>,
+    /// Streamable HTTP server: the MCP endpoint. Exactly one of `command` and `url`.
+    #[serde(default)]
+    url: Option<String>,
+    /// Extra HTTP headers for a `url` server. Values may contain `{env:NAME}`
+    /// and `{cmd:shell command}`, expanded when the daemon starts.
+    #[serde(default)]
+    headers: HashMap<String, String>,
     #[serde(default)]
     default_args: Vec<String>,
     #[serde(default)]
@@ -121,6 +132,30 @@ struct ServerProfile {
     description: String,
     #[serde(default)]
     env: HashMap<String, String>,
+}
+
+/// How a server is reached, decided from its config entry.
+#[derive(Debug, PartialEq)]
+enum TransportKind<'a> {
+    Stdio,
+    Http(&'a str),
+}
+
+impl ServerProfile {
+    fn transport_kind(&self, server_name: &str) -> Result<TransportKind<'_>> {
+        match (&self.url, self.command.is_empty()) {
+            (Some(url), true) => Ok(TransportKind::Http(url)),
+            (None, false) => Ok(TransportKind::Stdio),
+            (Some(_), false) => Err(anyhow!(
+                "Server '{}' has both \"command\" and \"url\" in its config; keep one",
+                server_name
+            )),
+            (None, true) => Err(anyhow!(
+                "Server '{}' needs either \"command\" (stdio) or \"url\" (HTTP) in its config",
+                server_name
+            )),
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -302,10 +337,17 @@ fn expand_template_vars(arg: &str, server_name: &str) -> String {
 // MCP Client (Generic)
 // ============================================================================
 
+enum Transport {
+    Stdio {
+        child: Child,
+        stdin: ChildStdin,
+        stdout: BufReader<ChildStdout>,
+    },
+    Http(http::HttpTransport),
+}
+
 struct McpClient {
-    child: Child,
-    stdin: ChildStdin,
-    stdout: BufReader<ChildStdout>,
+    transport: Transport,
     request_id: u64,
 }
 
@@ -313,10 +355,31 @@ impl McpClient {
     fn start(profile: &ServerProfile, extra_args: Option<Vec<String>>, server_name: &str) -> Result<Self> {
         eprintln!("🚀 Starting MCP server...");
 
-        if profile.command.is_empty() {
-            return Err(anyhow!("Server profile has empty command"));
-        }
+        let transport = match profile.transport_kind(server_name)? {
+            TransportKind::Http(url) => {
+                if extra_args.is_some() {
+                    eprintln!("Ignoring --server-args: '{}' is a url server", server_name);
+                }
+                Transport::Http(http::HttpTransport::new(url, &profile.headers)?)
+            }
+            TransportKind::Stdio => Self::spawn_stdio(profile, extra_args, server_name)?,
+        };
 
+        let mut mcp = Self {
+            transport,
+            request_id: 0,
+        };
+
+        mcp.initialize()?;
+        eprintln!("✅ MCP server ready");
+        Ok(mcp)
+    }
+
+    fn spawn_stdio(
+        profile: &ServerProfile,
+        extra_args: Option<Vec<String>>,
+        server_name: &str,
+    ) -> Result<Transport> {
         let mut cmd = Command::new(&profile.command[0]);
 
         // Add command args (e.g., for npx: "@playwright/mcp@latest")
@@ -348,16 +411,11 @@ impl McpClient {
         let stdin = child.stdin.take().unwrap();
         let stdout = BufReader::new(child.stdout.take().unwrap());
 
-        let mut mcp = Self {
+        Ok(Transport::Stdio {
             child,
             stdin,
             stdout,
-            request_id: 0,
-        };
-
-        mcp.initialize()?;
-        eprintln!("✅ MCP server ready");
-        Ok(mcp)
+        })
     }
 
     fn initialize(&mut self) -> Result<()> {
@@ -375,7 +433,14 @@ impl McpClient {
             }
         });
 
-        self.send_request(&init_request)?;
+        let response = self.send_request(&init_request)?;
+
+        // HTTP: every later request names the negotiated protocol version.
+        if let Transport::Http(http) = &mut self.transport {
+            if let Some(version) = response["result"]["protocolVersion"].as_str() {
+                http.set_protocol_version(version);
+            }
+        }
 
         let notification = json!({
             "jsonrpc": "2.0",
@@ -388,11 +453,18 @@ impl McpClient {
     }
 
     fn send_request(&mut self, request: &Value) -> Result<Value> {
-        let request_str = serde_json::to_string(request)?;
-        writeln!(self.stdin, "{}", request_str)?;
-        self.stdin.flush()?;
-
-        let response = read_response(&mut self.stdout, &mut self.stdin, &request["id"])?;
+        let response = match self.exchange(request) {
+            // HTTP session gone: initialize again and repeat the request once.
+            Err(e)
+                if e.downcast_ref::<http::SessionExpired>().is_some()
+                    && request["method"] != "initialize" =>
+            {
+                eprintln!("MCP session expired; starting a new session");
+                self.initialize()?;
+                self.exchange(request)?
+            }
+            other => other?,
+        };
 
         if let Some(error) = response.get("error") {
             return Err(anyhow!("MCP Error: {}", error));
@@ -401,11 +473,29 @@ impl McpClient {
         Ok(response)
     }
 
+    /// Send one request over the transport and return the message that answers it.
+    fn exchange(&mut self, request: &Value) -> Result<Value> {
+        match &mut self.transport {
+            Transport::Stdio { stdin, stdout, .. } => {
+                let request_str = serde_json::to_string(request)?;
+                writeln!(stdin, "{}", request_str)?;
+                stdin.flush()?;
+                read_response(stdout, stdin, &request["id"])
+            }
+            Transport::Http(http) => http.request(request),
+        }
+    }
+
     fn send_notification(&mut self, notification: &Value) -> Result<()> {
-        let notif_str = serde_json::to_string(notification)?;
-        writeln!(self.stdin, "{}", notif_str)?;
-        self.stdin.flush()?;
-        Ok(())
+        match &mut self.transport {
+            Transport::Stdio { stdin, .. } => {
+                let notif_str = serde_json::to_string(notification)?;
+                writeln!(stdin, "{}", notif_str)?;
+                stdin.flush()?;
+                Ok(())
+            }
+            Transport::Http(http) => http.notify(notification),
+        }
     }
 
     fn next_id(&mut self) -> u64 {
@@ -498,7 +588,9 @@ impl McpClient {
 
 impl Drop for McpClient {
     fn drop(&mut self) {
-        let _ = self.child.kill();
+        if let Transport::Stdio { child, .. } = &mut self.transport {
+            let _ = child.kill();
+        }
     }
 }
 
@@ -1030,19 +1122,40 @@ fn read_response<R: BufRead, W: Write>(
     writer: &mut W,
     id: &Value,
 ) -> Result<Value> {
-    let brief = |text: &str| -> String { text.chars().take(200).collect() };
-
-    loop {
+    let mut next = || -> Result<Option<String>> {
         let mut line = String::new();
         let bytes = reader
             .read_line(&mut line)
             .context("Failed to read from MCP server")?;
-        if bytes == 0 {
+        Ok(if bytes == 0 { None } else { Some(line) })
+    };
+    let mut reply = |reply: &Value| -> Result<()> {
+        writeln!(writer, "{}", serde_json::to_string(reply)?)?;
+        writer.flush()?;
+        Ok(())
+    };
+
+    await_response(&mut next, &mut reply, id)
+}
+
+/// The transport-independent part of [`read_response`]: `next` yields the
+/// server's messages one at a time (`None` when its output has ended) and
+/// `reply` sends an answer to a server-to-client request. stdio feeds it lines,
+/// HTTP feeds it the events of a response stream.
+pub(crate) fn await_response(
+    next: &mut dyn FnMut() -> Result<Option<String>>,
+    reply: &mut dyn FnMut(&Value) -> Result<()>,
+    id: &Value,
+) -> Result<Value> {
+    let brief = |text: &str| -> String { text.chars().take(200).collect() };
+
+    loop {
+        let Some(line) = next()? else {
             return Err(anyhow!(
                 "MCP server closed its output before answering request {}",
                 id
             ));
-        }
+        };
 
         let text = line.trim();
         if text.is_empty() {
@@ -1068,7 +1181,7 @@ fn read_response<R: BufRead, W: Write>(
                 continue;
             };
 
-            let reply = if method == "ping" {
+            let answer = if method == "ping" {
                 json!({"jsonrpc": "2.0", "id": server_request_id, "result": {}})
             } else {
                 eprintln!("Declining request from server: {}", method);
@@ -1078,8 +1191,7 @@ fn read_response<R: BufRead, W: Write>(
                     "error": {"code": -32601, "message": format!("Method not found: {}", method)}
                 })
             };
-            writeln!(writer, "{}", serde_json::to_string(&reply)?)?;
-            writer.flush()?;
+            reply(&answer)?;
             continue;
         }
 
@@ -1188,7 +1300,16 @@ fn main() -> Result<()> {
                     &profile.description
                 };
                 println!("  {}: {}", name, desc);
-                println!("    Command: {:?}", profile.command);
+                if let Some(url) = &profile.url {
+                    println!("    URL: {}", url);
+                    if !profile.headers.is_empty() {
+                        let mut names: Vec<&String> = profile.headers.keys().collect();
+                        names.sort();
+                        println!("    Headers: {:?}", names);
+                    }
+                } else {
+                    println!("    Command: {:?}", profile.command);
+                }
                 if !profile.default_args.is_empty() {
                     println!("    Default args: {:?}", profile.default_args);
                 }
@@ -1369,6 +1490,10 @@ fn main() -> Result<()> {
                 None
             };
 
+            // Catch a config entry with both or neither of command/url here,
+            // where the user sees it, instead of in daemon.log.
+            profile.transport_kind(&server_name)?;
+
             // Resolve the config file once and hand it to the daemon, made
             // absolute so it does not depend on the daemon's working directory.
             let config_path = get_config_path(cli.config.clone())?;
@@ -1408,6 +1533,8 @@ mod tests {
     fn profile(supports_daemon: bool) -> ServerProfile {
         ServerProfile {
             command: vec!["true".to_string()],
+            url: None,
+            headers: HashMap::new(),
             default_args: vec![],
             supports_daemon,
             description: String::new(),
@@ -1602,6 +1729,31 @@ mod tests {
         );
         let err = result.unwrap_err().to_string();
         assert!(err.contains("closed its output"), "{err}");
+    }
+
+    #[test]
+    fn transport_kind_needs_exactly_one_of_command_and_url() {
+        let parse = |json: &str| -> ServerProfile { serde_json::from_str(json).unwrap() };
+
+        let stdio = parse(r#"{"command": ["npx", "server"]}"#);
+        assert_eq!(stdio.transport_kind("s").unwrap(), TransportKind::Stdio);
+
+        let http = parse(
+            r#"{"url": "http://127.0.0.1:8780/mcp", "headers": {"X-API-KEY": "{env:RB_API_KEY}"}}"#,
+        );
+        assert_eq!(
+            http.transport_kind("s").unwrap(),
+            TransportKind::Http("http://127.0.0.1:8780/mcp")
+        );
+        assert_eq!(http.headers["X-API-KEY"], "{env:RB_API_KEY}");
+
+        let both = parse(r#"{"command": ["x"], "url": "http://h/mcp"}"#);
+        let err = both.transport_kind("demo").unwrap_err().to_string();
+        assert!(err.contains("both") && err.contains("demo"), "{err}");
+
+        let neither = parse(r#"{"description": "nothing"}"#);
+        let err = neither.transport_kind("demo").unwrap_err().to_string();
+        assert!(err.contains("either") && err.contains("demo"), "{err}");
     }
 
     #[test]

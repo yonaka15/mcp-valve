@@ -80,11 +80,43 @@ Example config:
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `command` | `string[]` | Command and initial args to start the server |
-| `default_args` | `string[]` | Default arguments (overridden by `--server-args`) |
+| `command` | `string[]` | Command and initial args to start a stdio server. Exactly one of `command` and `url` |
+| `url` | `string` | MCP endpoint of a remote (Streamable HTTP) server. Exactly one of `command` and `url` |
+| `headers` | `object` | Extra HTTP headers for a `url` server (see below) |
+| `default_args` | `string[]` | Default arguments (overridden by `--server-args`); stdio only |
 | `supports_daemon` | `bool` | Enable daemon mode (required for tool operations) |
 | `description` | `string` | Human-readable description |
-| `env` | `object` | Environment variables to set |
+| `env` | `object` | Environment variables to set; stdio only |
+
+### Remote servers (Streamable HTTP)
+
+A server reached over HTTP has a `url` instead of a `command`:
+
+```json
+{
+  "realboard": {
+    "url": "http://127.0.0.1:8780/mcp",
+    "headers": { "X-API-KEY": "{cmd:op read op://Vault/Item/credential}" },
+    "supports_daemon": true,
+    "description": "RealBoard MCP"
+  }
+}
+```
+
+Header values may contain placeholders, so no secret has to be written into the config file:
+
+| Placeholder | Expands to |
+|-------------|------------|
+| `{env:NAME}` | The environment variable `NAME`, as seen by `start-daemon`. A missing variable is an error |
+| `{cmd:command}` | The trimmed output of `command`, run with `sh -c`. The command ends at the first `}` |
+
+Placeholders are expanded once, when the daemon starts. `list-servers` shows header names, never values.
+
+What is supported: the Streamable HTTP transport of the initialize-based MCP revisions (2025-03-26 to 2025-11-25): JSON and SSE responses, the `Mcp-Session-Id` session (a new session is started when the server answers 404), and the `MCP-Protocol-Version` header.
+
+What is not: the standalone GET stream, resuming a broken stream, OAuth, the old HTTP+SSE transport (2024-11-05), and the stateless 2026-07-28 revision. The session is not deleted on `stop-daemon`. Opening a tunnel or VPN to the server is outside mcp-valve.
+
+If the daemon cannot reach the server or expand a header, `start-daemon` still reports success; the reason is in `.mcp-profile/<server>/daemon.log`.
 
 ### Template Variables
 
