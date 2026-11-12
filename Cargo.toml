@@ -1,6 +1,6 @@
 [package]
 name = "mcp-valve"
-version = "2.1.0"
+version = "2.1.1"
 edition = "2021"
 description = "Unified MCP CLI - Generic MCP Protocol Client"
 authors = ["Yoshifumi Nakahira (yonaka15)"]
