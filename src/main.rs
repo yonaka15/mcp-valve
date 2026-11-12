@@ -1017,6 +1017,13 @@ fn list_tools_via_daemon(server_name: &str) -> Result<Value> {
 /// - a response carrying a different `id`: logged
 /// - a line that is not a JSON object: logged
 ///
+/// An error with a null `id` is returned as the response: JSON-RPC uses it
+/// when the server could not read the request at all, and requests are sent
+/// one at a time, so it can only be about the request in flight.
+///
+/// There is no timeout and no limit on skipped messages: a tool may report
+/// progress for as long as it runs.
+///
 /// Logging goes to stderr, which is `daemon.log` for the daemon process.
 fn read_response<R: BufRead, W: Write>(
     reader: &mut R,
@@ -1045,7 +1052,10 @@ fn read_response<R: BufRead, W: Write>(
         let message: Value = match serde_json::from_str(text) {
             Ok(value @ Value::Object(_)) => value,
             _ => {
-                eprintln!("Skipping non-JSON-RPC output from server: {}", brief(text));
+                eprintln!(
+                    "Skipping output that is not a JSON-RPC object: {}",
+                    brief(text)
+                );
                 continue;
             }
         };
@@ -1074,6 +1084,10 @@ fn read_response<R: BufRead, W: Write>(
         }
 
         if message_id == Some(id) {
+            return Ok(message);
+        }
+
+        if message_id.is_none() && message.get("error").is_some() {
             return Ok(message);
         }
 
@@ -1566,6 +1580,21 @@ mod tests {
             7,
         );
         assert_eq!(result.unwrap()["error"]["code"], json!(-32602));
+
+        // An error with a null id (the server could not read the request)
+        // belongs to the request in flight.
+        let (result, _) = read_with(
+            "{\"jsonrpc\":\"2.0\",\"id\":null,\"error\":{\"code\":-32700,\"message\":\"Parse error\"}}\n",
+            7,
+        );
+        assert_eq!(result.unwrap()["error"]["code"], json!(-32700));
+
+        // A result with a null id is not a response to anything: skipped.
+        let (result, _) = read_with(
+            "{\"jsonrpc\":\"2.0\",\"id\":null,\"result\":{}}\n{\"jsonrpc\":\"2.0\",\"id\":7,\"result\":{\"ok\":true}}\n",
+            7,
+        );
+        assert_eq!(result.unwrap()["result"], json!({"ok": true}));
 
         let (result, _) = read_with(
             "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/message\"}\n",
