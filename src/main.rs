@@ -524,19 +524,22 @@ fn daemon_not_running_error(server_name: &str) -> anyhow::Error {
     )
 }
 
-/// Format error message when the server's config disables daemon mode.
+/// Format error message when the server's config does not enable daemon mode.
 ///
 /// Tool operations only run through the daemon, so starting it is not the
 /// fix here: the config field is. Name the field and the file that holds it.
-fn daemon_disabled_message(server_name: &str, config_path: &str) -> String {
+/// A missing field deserializes to `false`, so the text covers both cases.
+fn daemon_disabled_message(server_name: &str, config_path: &str, project: &str) -> String {
     format!(
-        "Server '{}' is configured with \"supports_daemon\": false\n\n\
+        "Server '{}' does not have \"supports_daemon\": true in its config \
+        (the field is missing or false)\n\n\
         Tool operations (call, list-tools, shell) need daemon mode.\n\
         Set \"supports_daemon\": true for '{}' in:\n  \
         {}\n\n\
         Then start the daemon:\n  \
+        cd {}\n  \
         mcp-valve --server {} start-daemon",
-        server_name, server_name, config_path, server_name
+        server_name, server_name, config_path, project, server_name
     )
 }
 
@@ -555,7 +558,10 @@ fn daemon_unavailable_error(
         .map(|p| p.display().to_string())
         .unwrap_or_else(|_| "your mcp-valve config file".to_string());
 
-    anyhow!("{}", daemon_disabled_message(server_name, &config_path))
+    anyhow!(
+        "{}",
+        daemon_disabled_message(server_name, &config_path, &get_project_path())
+    )
 }
 
 // ============================================================================
@@ -1242,8 +1248,10 @@ mod tests {
         )
         .to_string();
 
-        assert!(err.contains("\"supports_daemon\": false"), "{err}");
+        assert!(err.contains("\"supports_daemon\": true"), "{err}");
+        assert!(err.contains("missing or false"), "{err}");
         assert!(err.contains("/tmp/servers.json"), "{err}");
+        assert!(err.contains(&format!("cd {}", get_project_path())), "{err}");
         assert!(!err.contains("Daemon is not running"), "{err}");
     }
 
@@ -1257,6 +1265,22 @@ mod tests {
         .to_string();
 
         assert!(err.contains("Daemon is not running"), "{err}");
+        assert!(err.contains(&format!("cd {}", get_project_path())), "{err}");
         assert!(err.contains("mcp-valve --server demo start-daemon"), "{err}");
+    }
+
+    #[test]
+    fn omitted_supports_daemon_field_is_reported_as_disabled() {
+        let config: ServerConfig =
+            serde_json::from_str(r#"{"demo": {"command": ["true"]}}"#).unwrap();
+        let profile = config.servers.get("demo").unwrap();
+        assert!(!profile.supports_daemon);
+
+        let err =
+            daemon_unavailable_error("demo", profile, Some(PathBuf::from("/tmp/servers.json")))
+                .to_string();
+
+        assert!(err.contains("missing or false"), "{err}");
+        assert!(!err.contains("Daemon is not running"), "{err}");
     }
 }
